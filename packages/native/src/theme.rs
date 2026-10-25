@@ -474,6 +474,7 @@ pub struct Theme {
     /// Every layout number. Overridable from JS, so a design tweak needs no
     /// native rebuild.
     pub metrics: Metrics,
+    pub diff: crate::diff_style::DiffStyle,
     pub markdown: crate::markdown_style::MarkdownStyle,
 }
 
@@ -498,6 +499,7 @@ impl Theme {
             font_sans: system_sans().to_string(),
             font_mono: system_mono().to_string(),
             metrics: Metrics::default(),
+            diff: Default::default(),
             markdown: Default::default(),
         }
     }
@@ -522,6 +524,7 @@ impl Theme {
             font_sans: system_sans().to_string(),
             font_mono: system_mono().to_string(),
             metrics: Metrics::default(),
+            diff: Default::default(),
             markdown: Default::default(),
         }
     }
@@ -551,6 +554,7 @@ impl Theme {
             self.font_sans = font.clone();
         }
         if let Some(markdown) = &o.markdown { self.markdown = markdown.clone(); }
+        if let Some(diff) = &o.diff { self.diff = diff.clone(); }
         if let Some(metrics) = &o.metrics {
             self.metrics.apply(metrics);
         }
@@ -665,6 +669,7 @@ pub struct ThemeOverride {
     pub font_mono: Option<String>,
     pub syntax: Option<SyntaxOverride>,
     pub metrics: Option<MetricsOverride>,
+    pub diff: Option<crate::diff_style::DiffStyle>,
     pub markdown: Option<crate::markdown_style::MarkdownStyle>,
 }
 
