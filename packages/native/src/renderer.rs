@@ -1276,8 +1276,7 @@ impl GpuixRenderer {
             } else {
                 crate::app_menu::init(&app_name, cx);
             }
-            let bounds = gpui::Bounds::centered(
-                None,
+            let bounds = crate::automation_display::centered(
                 gpui::size(gpui::px(width as f32), gpui::px(height as f32)),
                 cx,
             );
@@ -1440,7 +1439,7 @@ impl GpuixRenderer {
                                     size,
                                 }
                             } else {
-                                gpui::Bounds::centered(None, size, cx)
+                                crate::automation_display::centered(size, cx)
                             };
                             let window = match cx.open_window(
                                 to_gpui_window_options(&window_options, bounds),
@@ -8121,6 +8120,7 @@ fn to_gpui_window_options(
         focus: options.focus.unwrap_or(true),
         show: options.show.unwrap_or(true),
         app_id: options.app_id.clone(),
+        display_id: crate::automation_display::display(),
         ..Default::default()
     };
 

@@ -15,6 +15,7 @@ mod accessibility;
 #[cfg(target_os = "macos")]
 mod app_menu;
 mod automation;
+mod automation_display;
 mod cache_island;
 mod stroke_draw;
 mod rich_doc;
