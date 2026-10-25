@@ -1081,7 +1081,10 @@ impl GpuixRenderer {
 
     fn automation_bounds(&self) -> Result<HashMap<u64, crate::automation::ElementBounds>> {
         #[cfg(target_os = "macos")]
-        return Ok(crate::automation::all_bounds());
+        return update_window_without_view(|window, cx| {
+            window.kybern_prepare_snapshot(cx);
+            crate::automation::all_bounds()
+        });
 
         #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
         {
@@ -3147,7 +3150,8 @@ impl GpuixRenderer {
     #[napi]
     pub fn clock_pause(&self) -> Result<f64> {
         #[cfg(target_os = "macos")]
-        return update_window(move |view, _window, cx| {
+        return update_window(move |view, window, cx| {
+            window.kybern_set_test_clock_paused(true);
             let now_ms = view.clock.pause();
             cx.notify();
             now_ms
@@ -3168,7 +3172,8 @@ impl GpuixRenderer {
     #[napi]
     pub fn clock_set(&self, now_ms: f64) -> Result<f64> {
         #[cfg(target_os = "macos")]
-        return update_window(move |view, _window, cx| {
+        return update_window(move |view, window, cx| {
+            window.kybern_set_test_clock_paused(true);
             let now_ms = view.clock.set_ms(now_ms);
             cx.notify();
             now_ms
@@ -3192,7 +3197,8 @@ impl GpuixRenderer {
     #[napi]
     pub fn clock_fast_forward(&self, delta_ms: f64) -> Result<f64> {
         #[cfg(target_os = "macos")]
-        return update_window(move |view, _window, cx| {
+        return update_window(move |view, window, cx| {
+            window.kybern_set_test_clock_paused(true);
             let now_ms = view.clock.fast_forward_ms(delta_ms);
             cx.notify();
             now_ms
@@ -3216,7 +3222,8 @@ impl GpuixRenderer {
     #[napi]
     pub fn clock_resume(&self) -> Result<f64> {
         #[cfg(target_os = "macos")]
-        return update_window(move |view, _window, cx| {
+        return update_window(move |view, window, cx| {
+            window.kybern_set_test_clock_paused(false);
             let now_ms = view.clock.resume();
             cx.notify();
             now_ms
@@ -3238,9 +3245,9 @@ impl GpuixRenderer {
     pub fn capture_screenshot(&self, path: String) -> Result<()> {
         #[cfg(all(target_os = "macos", feature = "test-support"))]
         {
-            let image = update_window(move |_view, window, cx| {
-                cx.notify();
+            let image = update_window_without_view(move |window, cx| {
                 window.refresh();
+                window.kybern_prepare_snapshot(cx);
                 window.render_to_image()
             })?
             .map_err(|e| Error::from_reason(format!("Screenshot capture failed: {}", e)))?;
