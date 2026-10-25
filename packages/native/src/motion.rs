@@ -106,6 +106,10 @@ struct MotionTransition {
     kind: Option<String>,
     #[serde(default)]
     bounce: f64,
+    #[serde(default)]
+    velocity_x: f64,
+    #[serde(default)]
+    velocity_y: f64,
     #[serde(default = "default_duration")]
     duration: f64,
     #[serde(default)]
@@ -119,6 +123,8 @@ impl Default for MotionTransition {
         Self {
             kind: None,
             bounce: 0.0,
+            velocity_x: 0.0,
+            velocity_y: 0.0,
             duration: default_duration(),
             delay: 0.0,
             ease: default_ease(),
@@ -263,11 +269,17 @@ impl MotionState {
         } else {
             elapsed.saturating_sub(delay).as_secs_f64() / duration.as_secs_f64()
         };
-        let active = self.from != self.target && raw < 1.0;
+        let has_velocity = self.transition.kind.as_deref() == Some("spring") && (self.transition.velocity_x != 0.0 || self.transition.velocity_y != 0.0);
+        let active = (self.from != self.target || has_velocity) && raw < 1.0;
         let progress = if self.transition.kind.as_deref() == Some("spring") {
             crate::spring::progress(raw.clamp(0.0, 1.0), self.transition.bounce)
         } else { ease(raw.clamp(0.0, 1.0), &self.transition.ease) };
-        (self.from.interpolate(self.target, progress), active)
+        let mut value = self.from.interpolate(self.target, progress);
+        if has_velocity {
+            value.translate_x = Some(value.translate_x.unwrap_or(0.0) + crate::spring::velocity_offset(raw, self.transition.bounce, self.transition.velocity_x, self.transition.duration));
+            value.translate_y = Some(value.translate_y.unwrap_or(0.0) + crate::spring::velocity_offset(raw, self.transition.bounce, self.transition.velocity_y, self.transition.duration));
+        }
+        (value, active)
     }
 
     pub(crate) fn frame(&mut self, now: Instant) -> MotionFrame {
@@ -324,6 +336,9 @@ fn parse_description(source: &serde_json::Value) -> Result<MotionDescription, St
     }
     if !description.transition.bounce.is_finite() || !(0.0..=1.0).contains(&description.transition.bounce) {
         return Err("motion spring bounce must be between 0 and 1".into());
+    }
+    if [description.transition.velocity_x, description.transition.velocity_y].iter().any(|v| !v.is_finite() || v.abs() > 1_000_000.0) {
+        return Err("Spring velocity must be finite and at most 1000000 pixels/second".into());
     }
     Ok(description)
 }
