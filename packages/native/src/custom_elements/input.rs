@@ -328,6 +328,7 @@ struct TextEditorElement {
     state: Option<Entity<TextEditorState>>,
     intercept_keys: Vec<String>,
     key_interceptor: Option<gpui::Subscription>,
+    secure: bool,
 }
 
 impl TextEditorElement {
@@ -344,6 +345,7 @@ impl TextEditorElement {
             state: None,
             intercept_keys: Vec::new(),
             key_interceptor: None,
+            secure: false,
         }
     }
 }
@@ -388,6 +390,9 @@ impl CustomElement for TextEditorElement {
                     emits_key_down,
                     intercept_keys,
                     emits_key_up,
+                    secure: false,
+                    secure_session: Default::default(),
+                    secure_subscriptions: Vec::new(),
                     focus_handle: state_focus_handle,
                     content: value,
                     placeholder: placeholder.into(),
@@ -450,6 +455,16 @@ impl CustomElement for TextEditorElement {
             state.emits_key_down = emits_key_down;
             state.intercept_keys = self.intercept_keys.clone();
             state.emits_key_up = emits_key_up;
+            state.secure = self.secure;
+            if state.secure && state.secure_subscriptions.is_empty() {
+                let focus = state.focus_handle.clone();
+                state.secure_subscriptions = vec![
+                    cx.on_focus(&focus, _window, |state, window, _| state.update_secure_input(window)),
+                    cx.on_blur(&focus, _window, |state, window, _| state.update_secure_input(window)),
+                    cx.observe_window_activation(_window, |state, window, _| state.update_secure_input(window)),
+                ];
+            }
+            state.update_secure_input(_window);
             state.placeholder = self.placeholder.clone().into();
             state.read_only = self.read_only;
             state.min_rows = self.min_rows.max(1);
@@ -496,13 +511,17 @@ impl CustomElement for TextEditorElement {
         {
             editor = editor.relative();
         }
-        let default_role = if self.multiline {
+        let default_role = if self.secure {
+            gpui::Role::PasswordInput
+        } else if self.multiline {
             gpui::Role::MultilineTextInput
         } else {
             gpui::Role::TextInput
         };
         editor = crate::accessibility::apply_accessibility(editor, ctx.props, Some(default_role));
-        if ctx.props.get("aria-valuetext").is_none() && !self.value.is_empty() {
+        if self.secure {
+            editor = editor.role(gpui::Role::PasswordInput).aria_value(crate::secure_input::mask(&self.value));
+        } else if ctx.props.get("aria-valuetext").is_none() && !self.value.is_empty() {
             editor = editor.aria_value(self.value.clone());
         }
         if !self.placeholder.is_empty() {
@@ -550,6 +569,7 @@ impl CustomElement for TextEditorElement {
         match key {
             "value" => self.value = value.as_str().unwrap_or_default().to_string(),
             "placeholder" => self.placeholder = value.as_str().unwrap_or_default().to_string(),
+            "secure" => self.secure = !self.multiline && value.as_bool().unwrap_or(false),
             "interceptKeys" => self.intercept_keys = value.as_array().map(|keys| keys.iter().filter_map(|k| k.as_str().map(str::to_owned)).collect()).unwrap_or_default(),
             "readOnly" => self.read_only = value.as_bool().unwrap_or(false),
             "minRows" => self.min_rows = value.as_u64().unwrap_or(1) as usize,
@@ -572,6 +592,7 @@ impl CustomElement for TextEditorElement {
             "minRows",
             "maxRows",
             "interceptKeys",
+            "secure",
             "theme",
         ]
     }
@@ -676,6 +697,9 @@ struct TextEditorState {
     emits_key_down: bool,
     intercept_keys: Vec<String>,
     emits_key_up: bool,
+    secure: bool,
+    secure_session: crate::secure_input::Session,
+    secure_subscriptions: Vec<gpui::Subscription>,
     focus_handle: FocusHandle,
     content: String,
     placeholder: SharedString,
@@ -711,6 +735,13 @@ struct TextEditorState {
 }
 
 impl TextEditorState {
+    fn update_secure_input(&mut self, window: &Window) {
+        self.secure_session.set(self.secure && self.focus_handle.is_focused(window) && window.is_window_active());
+    }
+    fn display_content(&self) -> String {
+        if self.secure { crate::secure_input::mask(&self.content) } else { self.content.clone() }
+    }
+
     fn reset_blink(&mut self, cx: &Context<Self>) {
         self.blink_anchor = cx.background_executor().now();
     }
@@ -1115,6 +1146,7 @@ impl TextEditorState {
     }
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
+        if self.secure { return; }
         if !self.selected_range.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(
                 self.content[self.selected_range.clone()].to_string(),
@@ -1123,6 +1155,7 @@ impl TextEditorState {
     }
 
     fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
+        if self.secure { return; }
         if self.read_only || self.selected_range.is_empty() {
             return;
         }
@@ -1186,6 +1219,7 @@ impl TextEditorState {
     }
 
     fn point_for_index(&self, index: usize) -> Option<Point<Pixels>> {
+        let index = if self.secure { crate::secure_input::display_index(&self.content, index) } else { index };
         for (line_index, line) in self.last_lines.iter().enumerate() {
             let line_start = *self.line_starts.get(line_index)?;
             if index < line_start || index > line_start + line.len() {
@@ -1216,7 +1250,7 @@ impl TextEditorState {
                 let index = line
                     .closest_index_for_position(local, self.line_height)
                     .unwrap_or_else(|index| index);
-                return (line_start + index).min(self.content.len());
+                return if self.secure { crate::secure_input::content_index(&self.content, line_start + index) } else { (line_start + index).min(self.content.len()) };
             }
             y -= height;
         }
@@ -1422,7 +1456,7 @@ impl TextEditorState {
         let (display, is_placeholder) = if self.content.is_empty() {
             (self.placeholder.clone(), true)
         } else {
-            (SharedString::from(self.content.clone()), false)
+            (SharedString::from(self.display_content()), false)
         };
         let rem_size = window.rem_size();
         let font_size = style.font_size.to_pixels(rem_size);
@@ -1448,7 +1482,12 @@ impl TextEditorState {
             }),
             strikethrough: None,
         };
-        let runs = match self.marked_range.as_ref() {
+        let display_marked = self.marked_range.as_ref().map(|range| {
+            if self.secure {
+                crate::secure_input::display_index(&self.content, range.start)..crate::secure_input::display_index(&self.content, range.end)
+            } else { range.clone() }
+        });
+        let runs = match display_marked.as_ref() {
             Some(marked) if !is_placeholder => vec![
                 run(marked.start, false),
                 run(marked.len(), true),
@@ -1922,7 +1961,7 @@ impl gpui::Element for EditorTextElement {
                     let display = if input.content.is_empty() {
                         input.placeholder.clone()
                     } else {
-                        input.content.clone().into()
+                        input.display_content().into()
                     };
                     (
                         std::mem::take(&mut input.last_lines),

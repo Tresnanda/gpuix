@@ -788,6 +788,11 @@ fn element_to_json(
                 .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
+            let mut custom = custom;
+            if element.element_type == "input" && element.custom_props().get("secure").and_then(|v| v.as_bool()) == Some(true) {
+                custom.remove("value");
+                custom.remove("aria-valuetext");
+            }
             obj.insert("customProps".to_string(), serde_json::Value::Object(custom));
         }
     }

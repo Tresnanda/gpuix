@@ -19,6 +19,7 @@ mod cache_island;
 mod window_drag;
 mod key_intercept;
 mod close_guard;
+mod secure_input;
 mod color;
 mod custom_elements;
 mod diff;
