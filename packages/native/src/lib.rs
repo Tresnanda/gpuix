@@ -31,6 +31,7 @@ mod secure_input;
 mod code_wrap;
 mod syntax_document;
 mod spring;
+mod physical_spring;
 mod translate;
 mod color;
 mod custom_elements;

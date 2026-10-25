@@ -18,6 +18,7 @@ pub(crate) struct MotionStyle {
     pub bottom: Option<f64>,
     pub left: Option<f64>,
     pub border_radius: Option<f64>,
+    pub rotate: Option<f64>,
     pub translate_x: Option<f64>,
     pub translate_y: Option<f64>,
 }
@@ -33,6 +34,7 @@ impl MotionStyle {
             bottom: self.bottom.or(fallback.bottom),
             left: self.left.or(fallback.left),
             border_radius: self.border_radius.or(fallback.border_radius),
+            rotate: self.rotate.or(fallback.rotate),
             translate_x: self.translate_x.or(fallback.translate_x),
             translate_y: self.translate_y.or(fallback.translate_y),
         }
@@ -52,6 +54,7 @@ impl MotionStyle {
             bottom: value(self.bottom, target.bottom, progress),
             left: value(self.left, target.left, progress),
             border_radius: value(self.border_radius, target.border_radius, progress),
+            rotate: value(self.rotate, target.rotate, progress),
             translate_x: value(self.translate_x, target.translate_x, progress),
             translate_y: value(self.translate_y, target.translate_y, progress),
         }
@@ -79,6 +82,7 @@ impl MotionStyle {
         if let Some(value) = self.left {
             style.left = Some(value);
         }
+        style.rotate = self.rotate;
         if let Some(value) = self.border_radius {
             style.border_radius = Some(value.max(0.0));
         }
@@ -105,6 +109,12 @@ struct MotionTransition {
     #[serde(default, rename = "type")]
     kind: Option<String>,
     #[serde(default)]
+    stiffness: Option<f64>,
+    #[serde(default)]
+    damping: Option<f64>,
+    #[serde(default)]
+    mass: Option<f64>,
+    #[serde(default)]
     bounce: f64,
     #[serde(default)]
     velocity_x: f64,
@@ -122,6 +132,7 @@ impl Default for MotionTransition {
     fn default() -> Self {
         Self {
             kind: None,
+            stiffness: None, damping: None, mass: None,
             bounce: 0.0,
             velocity_x: 0.0,
             velocity_y: 0.0,
@@ -256,7 +267,9 @@ impl MotionState {
 
     fn sample(&self, now: Instant) -> (MotionStyle, bool) {
         let delay = seconds(self.transition.delay);
-        let duration = seconds(self.transition.duration);
+        let physical = self.transition.physical();
+        let duration = seconds(physical.map_or(self.transition.duration, |(k,c,m)| crate::physical_spring::physical_horizon(k,c,m)));
+        let physical_time = now.saturating_duration_since(self.started).saturating_sub(delay).as_secs_f64();
         let elapsed = now.saturating_duration_since(self.started);
         let raw = if duration.is_zero() {
             if elapsed < delay {
@@ -272,12 +285,14 @@ impl MotionState {
         let has_velocity = self.transition.kind.as_deref() == Some("spring") && (self.transition.velocity_x != 0.0 || self.transition.velocity_y != 0.0);
         let active = (self.from != self.target || has_velocity) && raw < 1.0;
         let progress = if self.transition.kind.as_deref() == Some("spring") {
-            crate::spring::progress(raw.clamp(0.0, 1.0), self.transition.bounce)
+            if raw >= 1.0 { 1.0 } else if let Some((k,c,m)) = physical {
+                crate::physical_spring::physical_response(physical_time,k,c,m)
+            } else { crate::spring::progress(raw.clamp(0.0, 1.0), self.transition.bounce) }
         } else { ease(raw.clamp(0.0, 1.0), &self.transition.ease) };
         let mut value = self.from.interpolate(self.target, progress);
         if has_velocity {
-            value.translate_x = Some(value.translate_x.unwrap_or(0.0) + crate::spring::velocity_offset(raw, self.transition.bounce, self.transition.velocity_x, self.transition.duration));
-            value.translate_y = Some(value.translate_y.unwrap_or(0.0) + crate::spring::velocity_offset(raw, self.transition.bounce, self.transition.velocity_y, self.transition.duration));
+            value.translate_x = Some(value.translate_x.unwrap_or(0.0) + (if let Some((k,c,m)) = physical { if raw>=1.0 {0.0} else {crate::physical_spring::physical_velocity(physical_time,k,c,m,self.transition.velocity_x)} } else {crate::spring::velocity_offset(raw, self.transition.bounce, self.transition.velocity_x, self.transition.duration)}));
+            value.translate_y = Some(value.translate_y.unwrap_or(0.0) + (if let Some((k,c,m)) = physical { if raw>=1.0 {0.0} else {crate::physical_spring::physical_velocity(physical_time,k,c,m,self.transition.velocity_y)} } else {crate::spring::velocity_offset(raw, self.transition.bounce, self.transition.velocity_y, self.transition.duration)}));
         }
         (value, active)
     }
@@ -340,6 +355,12 @@ fn parse_description(source: &serde_json::Value) -> Result<MotionDescription, St
     if [description.transition.velocity_x, description.transition.velocity_y].iter().any(|v| !v.is_finite() || v.abs() > 1_000_000.0) {
         return Err("Spring velocity must be finite and at most 1000000 pixels/second".into());
     }
+    for (name, value) in [("stiffness",description.transition.stiffness),("damping",description.transition.damping),("mass",description.transition.mass)] {
+        if value.is_some_and(|v| !v.is_finite() || v <= 0.0 || v > 1_000_000.0) { return Err(format!("Spring {name} must be finite, positive and at most 1000000")); }
+    }
+    if let Some((k,c,m)) = description.transition.physical() {
+        if crate::physical_spring::physical_horizon(k,c,m)>60.0 { return Err("Physical spring must settle within 60 seconds".into()); }
+    }
     Ok(description)
 }
 
@@ -353,6 +374,7 @@ fn validate_style(style: &MotionStyle) -> Result<(), String> {
         ("bottom", style.bottom),
         ("left", style.left),
         ("borderRadius", style.border_radius),
+        ("rotate", style.rotate),
         ("translateX", style.translate_x),
         ("translateY", style.translate_y),
     ] {
@@ -613,5 +635,12 @@ mod tests {
             .unwrap();
         assert_eq!(style.width, Some(100.0));
         assert_eq!(style.opacity, Some(0.5));
+    }
+}
+
+impl MotionTransition {
+    fn physical(&self) -> Option<(f64,f64,f64)> {
+        (self.kind.as_deref()==Some("spring") && (self.stiffness.is_some() || self.damping.is_some() || self.mass.is_some()))
+            .then(||(self.stiffness.unwrap_or(100.),self.damping.unwrap_or(10.),self.mass.unwrap_or(1.)))
     }
 }

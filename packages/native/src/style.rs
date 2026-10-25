@@ -148,6 +148,8 @@ impl<'de> Deserialize<'de> for DimensionValue {
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StyleDesc {
+    /// Animated SVG rotation in degrees, about its centre.
+    pub rotate: Option<f64>,
     // Display
     pub display: Option<String>,
     pub visibility: Option<String>,

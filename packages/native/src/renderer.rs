@@ -2036,6 +2036,10 @@ impl GpuixRenderer {
         })
     }
     #[napi]
+    pub fn get_motion_capabilities(&self) -> serde_json::Value {
+        serde_json::json!({"rotate":true,"physicalSprings":true})
+    }
+    #[napi]
     pub fn zoom_window(&self) -> Result<()> {
         #[cfg(target_os = "macos")]
         return update_window(|_view, window, _cx| window.zoom_window());

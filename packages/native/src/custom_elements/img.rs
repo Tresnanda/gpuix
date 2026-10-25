@@ -484,7 +484,7 @@ impl CustomElement for SvgElement {
             .and_then(|style| style.color.as_deref())
             .and_then(crate::color::parse_color_rgba)
             .unwrap_or_else(|| gpui::rgb(0xe2e2e2).into());
-        let degrees = ctx.props.get("rotate").and_then(serde_json::Value::as_f64).filter(|v| v.is_finite()).unwrap_or(0.0);
+        let degrees = ctx.style.and_then(|s|s.rotate).or_else(||ctx.props.get("rotate").and_then(serde_json::Value::as_f64)).filter(|v| v.is_finite()).unwrap_or(0.0);
         let mut icon = gpui::svg()
             .with_transformation(gpui::Transformation::rotate(gpui::radians(degrees.to_radians() as f32)))
             .data(bytes)
