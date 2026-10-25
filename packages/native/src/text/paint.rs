@@ -192,6 +192,11 @@ pub enum HighlightSource {
     Resolved(Arc<super::search::HighlightContext>),
     /// `<code>`, `<markdown>`, `<diff>`: text the retained tree never sees.
     Native(Arc<super::search::HighlightContext>),
+    NativeFragment {
+        context: Arc<super::search::HighlightContext>, key: Arc<str>, text: SharedString,
+        range: Range<usize>,
+        washes: std::rc::Rc<std::cell::RefCell<Option<Vec<super::search::Wash>>>>,
+    },
 }
 
 pub struct SelectableText {
@@ -212,6 +217,7 @@ pub struct SelectableText {
     /// it can turn byte ranges into rects with [`range_rects`].
     pub extra_wash: Option<Box<dyn Fn(&TextLayout, &mut Window)>>,
     /// Clickable byte ranges and their payloads, typically link URLs.
+    pub hover_link_color: Option<Hsla>,
     pub links: Vec<(Range<usize>, String)>,
     /// Called with the payload of the range under a click.
     pub on_link: Option<Arc<dyn Fn(&str)>>,
@@ -241,6 +247,7 @@ impl SelectableText {
             selection,
             wash_color,
             extra_wash: None,
+            hover_link_color: None,
             links: Vec::new(),
             on_link: None,
             selectable: true,
@@ -262,6 +269,7 @@ pub fn selectable_text(opts: SelectableText) -> gpui::AnyElement {
         wash_color,
         extra_wash,
         links,
+        hover_link_color,
         on_link,
         selectable,
         group,
@@ -290,6 +298,14 @@ pub fn selectable_text(opts: SelectableText) -> gpui::AnyElement {
                 Some(HighlightSource::Native(ctx)) => {
                     super::search::washes_for_native_run(ctx, &key, &text)
                 }
+                Some(HighlightSource::NativeFragment { context, key, text, range, washes }) => {
+                    let mut cache = washes.borrow_mut();
+                    let all = cache.get_or_insert_with(|| super::search::washes_for_native_run(context, key, text));
+                    all.iter().filter_map(|wash| {
+                        let a=range.start.max(wash.range.start); let b=range.end.min(wash.range.end);
+                        (a<b).then(|| { let mut wash=wash.clone(); wash.range=a-range.start..b-range.start; wash })
+                    }).collect()
+                },
                 None => Vec::new(),
             };
             paint_highlight_washes(&layout, element_id, sub, &text, &washes, window);
@@ -319,6 +335,23 @@ pub fn selectable_text(opts: SelectableText) -> gpui::AnyElement {
                 });
             }
             PAINTED.with(|p| p.borrow_mut().push(text.clone()));
+            if let Some(color) = hover_link_color {
+                let hit = |position| layout.index_for_position(position).ok().and_then(|ix| links.iter().position(|(r,_)|r.contains(&ix)));
+                let hovered = hit(window.mouse_position());
+                if let Some(index) = hovered {
+                    for mut rect in range_rects(&layout, &links[index].0, 0.0, 0.0) {
+                        rect.origin.y += rect.size.height - gpui::px(2.0);
+                        rect.size.height = gpui::px(1.0);
+                        window.paint_quad(quad(rect, gpui::px(0.0), color, gpui::px(0.0), gpui::transparent_black(), Default::default()));
+                    }
+                }
+                let layout=layout.clone(); let links=links.clone();
+                window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, window, _cx| {
+                    if phase != gpui::DispatchPhase::Bubble { return; }
+                    let next=layout.index_for_position(event.position).ok().and_then(|ix|links.iter().position(|(r,_)|r.contains(&ix)));
+                    if next != hovered { window.refresh(); }
+                });
+            }
             if let Some(on_link) = &on_link {
                 register_link_listener(window, &layout, &links, on_link, &selection);
             }

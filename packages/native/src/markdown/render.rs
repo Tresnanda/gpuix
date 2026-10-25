@@ -20,6 +20,8 @@ use super::parser::{Block, BlockTree, InlineRun, TableAlign};
 use crate::syntax::cache::highlight_cached;
 use crate::text::{range_rects, runs::runs_for_spans, SharedSelection};
 use crate::theme::{Metrics, Theme};
+use crate::markdown_style::{number, color, tier, heading};
+include!("../markdown_inline.rs");
 
 // ── Metrics ──────────────────────────────────────────────────────────
 //
@@ -29,7 +31,7 @@ use crate::theme::{Metrics, Theme};
 // can move a glyph.
 
 /// Hairline between table rows.
-const TABLE_DIVIDER: f32 = 1.0;
+
 
 /// Per-column geometry resolved from measured max-content widths.
 pub struct TableColumns {
@@ -97,7 +99,7 @@ pub fn flatten_runs(runs: &[InlineRun], theme: &Theme, base_weight: FontWeight) 
             font(theme.font_sans.clone())
         };
         f.weight = if run.style.bold && base_weight.0 < FontWeight::SEMIBOLD.0 {
-            FontWeight::SEMIBOLD
+            FontWeight(number(theme.markdown.strong_weight, 600.0))
         } else {
             base_weight
         };
@@ -123,19 +125,20 @@ pub fn flatten_runs(runs: &[InlineRun], theme: &Theme, base_weight: FontWeight) 
             }
         }
 
+        if run.style.link.is_some() { f.weight = FontWeight(number(theme.markdown.link.weight, f.weight.0).clamp(1.0, 1000.0)); }
         out.push(TextRun {
             len: run.text.len(),
             font: f,
             // Inline code reads violet; links stay the monochrome foreground
             // with an underline, because accent is reserved for actions.
-            color: if run.style.code {
+            color: if run.style.link.is_some() { color(&theme.markdown.link.color, theme.text) } else if run.style.code {
                 theme.code_text
             } else {
                 theme.text
             },
             background_color: None,
-            underline: run.style.link.is_some().then_some(UnderlineStyle {
-                color: Some(theme.text_muted),
+            underline: (run.style.link.is_some() && !matches!(theme.markdown.link.underline.as_deref(), Some("none" | "hover"))).then_some(UnderlineStyle {
+                color: Some(color(&theme.markdown.link.color, theme.text_muted)),
                 thickness: px(1.0),
                 wavy: false,
             }),
@@ -170,6 +173,7 @@ pub struct MdContext {
     /// Monotonic sub-key counter. Must advance in document order so a drag
     /// resolves spans the same way the reader sees them.
     next_sub: usize,
+    list_depth: usize,
     /// Called with the URL of the link under a click. Hit testing happens per
     /// byte range inside the painted text, not per block.
     pub on_link: Option<Arc<dyn Fn(&str)>>,
@@ -193,6 +197,7 @@ impl MdContext {
             theme,
             highlight_set,
             next_sub: 0,
+            list_depth: 0,
             on_link,
         }
     }
@@ -213,18 +218,25 @@ impl MdContext {
 pub fn render_tree(tree: &BlockTree, ctx: &mut MdContext, window: &Window) -> AnyElement {
     use gpui::prelude::*;
 
-    let block_gap = ctx.theme.metrics.md_block_gap;
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(block_gap))
-        .children(
-            tree.blocks
-                .iter()
-                .map(|block| render_block(block, ctx, window))
-                .collect::<Vec<_>>(),
-        )
-        .into_any_element()
+    let theme = ctx.theme.clone();
+    if theme.markdown.heading_margin_top.is_none() && theme.markdown.heading_margin_bottom.is_none() {
+        return div().flex().flex_col().gap(px(theme.metrics.md_block_gap)).children(tree.blocks.iter().map(|block|render_block(block,ctx,window)).collect::<Vec<_>>()).into_any_element();
+    }
+    let mut children = Vec::new();
+    let mut previous_bottom: f32 = 0.0;
+    let mut previous_heading = false;
+    for (index, block) in tree.blocks.iter().enumerate() {
+        let (top, bottom) = if let Block::Heading { level, .. } = block {
+            let (size, _) = heading(&theme,*level);
+            (number(tier(&theme.markdown.heading_margin_tops,*level).or(theme.markdown.heading_margin_top), 0.0) * size,
+             number(theme.markdown.heading_margin_bottom, 0.0) * size)
+        } else { (theme.metrics.md_block_gap, theme.metrics.md_block_gap) };
+        let gap = if index == 0 { 0.0 } else if previous_heading && !matches!(block,Block::Heading { .. }) { number(theme.markdown.heading_following_gap, previous_bottom.max(top)) } else { previous_bottom.max(top) };
+        children.push(div().mt(px(gap)).child(render_block(block, ctx, window)).into_any_element());
+        previous_bottom = bottom;
+        previous_heading = matches!(block,Block::Heading { .. });
+    }
+    div().flex().flex_col().children(children).into_any_element()
 }
 
 pub fn render_block(block: &Block, ctx: &mut MdContext, window: &Window) -> AnyElement {
@@ -241,47 +253,40 @@ pub fn render_block(block: &Block, ctx: &mut MdContext, window: &Window) -> AnyE
             ctx,
         ),
         Block::Heading { level, runs } => {
-            let (size, line) = m.heading(*level);
-            text_element(runs, size, line, FontWeight::SEMIBOLD, ctx)
+            let (size, line) = heading(&theme,*level);
+            text_element(runs, size, line, FontWeight(number(tier(&theme.markdown.heading_weights,*level),600.0)), ctx)
         }
         Block::CodeBlock { language, code } => render_code_block(language.as_deref(), code, ctx),
-        Block::BlockQuote { children } => div()
-            // Accent-tinted quote: an indigo rail with a whisper of the same
-            // hue behind it.
-            .border_l_2()
-            .border_color(opacity(theme.accent, 0.6))
-            .bg(opacity(theme.accent, 0.05))
-            .rounded_tr(px(6.0))
-            .rounded_br(px(6.0))
-            .pl(px(12.0))
-            .pr(px(10.0))
-            .py(px(6.0))
-            .flex()
-            .flex_col()
-            .gap(px(8.0))
-            .text_color(theme.text_muted)
-            .children(
-                children
-                    .iter()
-                    .map(|child| render_block(child, ctx, window))
-                    .collect::<Vec<_>>(),
-            )
-            .into_any_element(),
+        Block::BlockQuote { children } => {
+            let old_text = ctx.theme.text;
+            ctx.theme.text = color(&theme.markdown.quote_text, theme.text_muted);
+            let children: Vec<_> = children.iter().map(|child| render_block(child, ctx, window)).collect();
+            ctx.theme.text = old_text;
+            div().border_l(px(number(theme.markdown.quote_border_width, 2.0)))
+                .border_color(color(&theme.markdown.quote_border, opacity(theme.accent, 0.6)))
+                .bg(color(&theme.markdown.quote_background, opacity(theme.accent, 0.05)))
+                .rounded_tr(px(if theme.markdown.quote_background.is_some(){0.0}else{6.0})).rounded_br(px(if theme.markdown.quote_background.is_some(){0.0}else{6.0}))
+                .pl(px(number(theme.markdown.quote_padding_left, 12.0)))
+                .pr(px(number(theme.markdown.quote_padding_right, 10.0)))
+                .py(px(number(theme.markdown.quote_padding_y, 6.0)))
+                .flex().flex_col().gap(px(number(theme.markdown.quote_gap, 8.0)))
+                .children(children).into_any_element()
+        },
         Block::List {
             ordered_start,
             items,
         } => {
-            let mut list = div().flex().flex_col().gap(px(4.0));
+            let mut list = div().flex().flex_col().gap(px(number(theme.markdown.list_item_gap, 4.0)));
             for (item_ix, item) in items.iter().enumerate() {
                 // Ordered numbers are accent-tinted text; unordered markers are
                 // a real 5px disc, because the glyph "•" reads too small at 14px.
                 let marker: AnyElement = match ordered_start {
                     Some(start) => div()
                         .flex_none()
-                        .min_w(px(18.0))
+                        .w(px((number(theme.markdown.list_indent, 26.0) - number(theme.markdown.list_marker_gap, 8.0)).max(0.0)))
                         .text_size(px(m.md_text_size))
                         .line_height(px(m.md_line_height))
-                        .text_color(opacity(theme.accent, 0.85))
+                        .when(theme.markdown.list_indent.is_some(), |el|el.text_right()).text_color(color(&theme.markdown.list_marker, opacity(theme.accent, 0.85)))
                         .child(crate::text::chrome_text(
                             SharedString::from(format!("{}.", start + item_ix as u64)),
                             None,
@@ -289,33 +294,37 @@ pub fn render_block(block: &Block, ctx: &mut MdContext, window: &Window) -> AnyE
                         .into_any_element(),
                     None => div()
                         .flex_none()
-                        .min_w(px(18.0))
+                        .w(px((number(theme.markdown.list_indent, 26.0) - number(theme.markdown.list_marker_gap, 8.0)).max(0.0)))
                         // Centre the disc on the first text line's cap band.
                         .h(px(m.md_line_height))
                         .flex()
-                        .items_center()
+                        .items_center().when(theme.markdown.list_indent.is_some(), |el|el.justify_end())
                         .child(
                             div()
                                 .ml(px(1.0))
-                                .w(px(5.0))
-                                .h(px(5.0))
-                                .rounded_full()
-                                .bg(opacity(theme.accent, 0.85)),
+                                .w(px(number(theme.markdown.list_marker_size, 5.0)))
+                                .h(px(number(theme.markdown.list_marker_size, 5.0)))
+                                .rounded(px(if theme.markdown.nested_list_markers && ctx.list_depth % 3 == 2 { 0.0 } else { number(theme.markdown.list_marker_size,5.0)/2.0 }))
+                                .bg(if ctx.list_depth % 3 == 1 && theme.markdown.nested_list_markers { gpui::transparent_black() } else { color(&theme.markdown.list_marker, opacity(theme.accent, 0.85)) })
+                                .border(px(if ctx.list_depth % 3 == 1 && theme.markdown.nested_list_markers { 1.0 } else { 0.0 }))
+                                .border_color(color(&theme.markdown.list_marker, opacity(theme.accent, 0.85))),
                         )
                         .into_any_element(),
                 };
+                ctx.list_depth += 1;
                 let children: Vec<AnyElement> = item
                     .iter()
                     .map(|child| render_block(child, ctx, window))
                     .collect();
+                ctx.list_depth -= 1;
                 list = list.child(
-                    div().flex().flex_row().gap(px(8.0)).child(marker).child(
+                    div().flex().flex_row().gap(px(number(theme.markdown.list_marker_gap, 8.0))).child(marker).child(
                         div()
                             .flex_1()
                             .min_w_0()
                             .flex()
                             .flex_col()
-                            .gap(px(4.0))
+                            .gap(px(number(theme.markdown.list_child_gap, 4.0)))
                             .children(children),
                     ),
                 );
@@ -345,7 +354,7 @@ fn text_element(
     use gpui::prelude::*;
 
     let flat = flatten_runs(runs, &ctx.theme, weight);
-    let inner = flat_text_element(&flat, ctx);
+    let inner = inline_element(&flat, size, line_height, None, ctx);
     div()
         .w_full()
         .min_w_0()
@@ -386,6 +395,7 @@ fn flat_text_element(flat: &FlatText, ctx: &mut MdContext) -> AnyElement {
     // routes through `chrome_text` for the glyphs but keeps the link listener.
     crate::text::selectable_text(crate::text::SelectableText {
         extra_wash: extra,
+        hover_link_color: (ctx.theme.markdown.link.underline.as_deref() == Some("hover")).then(||color(&ctx.theme.markdown.link.color, ctx.theme.text)),
         links: flat.links.clone(),
         on_link: ctx.on_link.clone(),
         selectable: ctx.selectable,
@@ -427,6 +437,7 @@ fn render_code_block(language: Option<&str>, code: &str, ctx: &mut MdContext) ->
         .line_height(px(m.code_line_height))
         .whitespace_nowrap();
 
+    if theme.markdown.code_wrap { lines = lines.w_full().min_w_0().flex_shrink_1().whitespace_normal(); }
     for (line_ix, line) in code.split('\n').enumerate() {
         let spans: Vec<(Range<usize>, Hsla)> = highlight
             .as_ref()
@@ -457,7 +468,8 @@ fn render_code_block(language: Option<&str>, code: &str, ctx: &mut MdContext) ->
                 ctx.selection_wash,
             )
         });
-        lines = lines.child(div().h(px(m.code_line_height)).flex_none().child(text));
+        let row = div().h(px(m.code_line_height)).flex_none();
+        lines = lines.child(crate::code_wrap::row(row, theme.markdown.code_wrap, m.code_line_height).child(text));
     }
 
     let body = div()
@@ -475,19 +487,21 @@ fn render_code_block(language: Option<&str>, code: &str, ctx: &mut MdContext) ->
         .w_full()
         .min_w_0()
         .rounded(px(m.md_code_radius))
-        .bg(ink(&theme, 0.035))
-        .border_1()
-        .border_color(theme.border)
+        .bg(color(&theme.markdown.code_background, ink(&theme, 0.035)))
+        .border(px(number(theme.markdown.code_border_width, 1.0)))
+        .border_color(color(&theme.markdown.code_border, theme.border))
         .overflow_hidden();
 
-    if let Some(language) = language {
+    if let Some(language) = language.filter(|_| theme.markdown.code_header.unwrap_or(true)) {
         block = block.child(
             div()
                 .px(px(m.md_code_padding_x))
                 .py(px(m.md_code_header_padding_y))
-                .border_b_1()
+                .border_b(px(number(theme.markdown.code_header_border_width, 1.0)))
                 .border_color(theme.border)
-                .bg(ink(&theme, 0.02))
+                .bg(color(&theme.markdown.code_header_background, ink(&theme, 0.02)))
+                .line_height(px(number(theme.markdown.code_header_line_height, m.md_line_height)))
+                .font_family(theme.font_mono.clone())
                 .text_size(px(m.md_code_header_text_size))
                 .text_color(theme.text_muted)
                 .child(crate::text::chrome_text(
@@ -533,7 +547,8 @@ fn render_table(
     // Consume a sub-key up front: a table whose cells are all empty renders no
     // text and would otherwise share a scroll id with the next such table.
     let table_sub = ctx.take_sub();
-    let hairline = hairline(&theme, 0.10);
+    let hairline = color(&theme.markdown.table_border, hairline(&theme, 0.10));
+    let border = number(theme.markdown.table_border_width, 1.0);
 
     // Flatten every cell once and take per-column max-content widths.
     let text_system = window.text_system();
@@ -541,7 +556,7 @@ fn render_table(
     let mut content = vec![0.0f32; cols];
     for (row_ix, row) in all.iter().enumerate() {
         let weight = if has_header && row_ix == 0 {
-            FontWeight::BOLD
+            FontWeight(number(theme.markdown.table_header_weight, 700.0))
         } else {
             FontWeight::NORMAL
         };
@@ -573,27 +588,33 @@ fn render_table(
         }
         flats.push(out);
     }
-    let geo = table_columns(&content, m);
+    let mut table_metrics = *m;
+    table_metrics.md_table_cell_padding = number(theme.markdown.table_padding_x, m.md_table_cell_padding);
+    let geo = table_columns(&content, &table_metrics);
 
     let mut inner = div()
         .flex()
         .flex_col()
         .w_full()
         .min_w(px(geo.min_table_width));
+    if theme.markdown.table_grid { inner = inner.border(px(border)).border_color(hairline); }
     for (row_ix, row) in flats.iter().enumerate() {
         if row_ix > 0 {
-            inner = inner.child(div().flex_none().h(px(TABLE_DIVIDER)).w_full().bg(hairline));
+            inner = inner.child(div().flex_none().h(px(if row_ix == 1 && has_header { number(theme.markdown.table_header_rule_width, border) } else { border })).w_full().bg(hairline));
         }
         let mut row_el = div().flex().flex_row();
+        if row_ix == 0 && has_header { row_el = row_el.bg(color(&theme.markdown.table_header_background, gpui::transparent_black())); }
         for (col, cell_flat) in row.iter().enumerate() {
             let mut cell = div()
                 .flex_grow(geo.naturals[col])
                 .flex_shrink(geo.naturals[col])
                 .flex_basis(px(0.0))
                 .min_w(px(geo.minimums[col]))
-                .p(px(m.md_table_cell_padding))
+                .px(px(number(theme.markdown.table_padding_x, m.md_table_cell_padding)))
+                .py(px(number(theme.markdown.table_padding_y, m.md_table_cell_padding)))
                 .text_size(px(m.md_text_size))
                 .line_height(px(m.md_line_height));
+            if theme.markdown.table_grid && col > 0 { cell = cell.border_l(px(border)).border_color(hairline); }
             cell = match align.get(col).copied().unwrap_or_default() {
                 TableAlign::Left => cell,
                 TableAlign::Center => cell.text_center(),
@@ -601,7 +622,7 @@ fn render_table(
             };
             if let Some(flat) = cell_flat {
                 if !flat.text.is_empty() {
-                    cell = cell.child(flat_text_element(flat, ctx));
+                    cell = cell.child(inline_element(flat, m.md_text_size, m.md_line_height, align.get(col).copied(), ctx));
                 }
             }
             row_el = row_el.child(cell);

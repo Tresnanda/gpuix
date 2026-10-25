@@ -474,6 +474,7 @@ pub struct Theme {
     /// Every layout number. Overridable from JS, so a design tweak needs no
     /// native rebuild.
     pub metrics: Metrics,
+    pub markdown: crate::markdown_style::MarkdownStyle,
 }
 
 impl Theme {
@@ -497,6 +498,7 @@ impl Theme {
             font_sans: system_sans().to_string(),
             font_mono: system_mono().to_string(),
             metrics: Metrics::default(),
+            markdown: Default::default(),
         }
     }
 
@@ -520,6 +522,7 @@ impl Theme {
             font_sans: system_sans().to_string(),
             font_mono: system_mono().to_string(),
             metrics: Metrics::default(),
+            markdown: Default::default(),
         }
     }
 
@@ -547,6 +550,7 @@ impl Theme {
         if let Some(font) = &o.font_sans {
             self.font_sans = font.clone();
         }
+        if let Some(markdown) = &o.markdown { self.markdown = markdown.clone(); }
         if let Some(metrics) = &o.metrics {
             self.metrics.apply(metrics);
         }
@@ -661,6 +665,7 @@ pub struct ThemeOverride {
     pub font_mono: Option<String>,
     pub syntax: Option<SyntaxOverride>,
     pub metrics: Option<MetricsOverride>,
+    pub markdown: Option<crate::markdown_style::MarkdownStyle>,
 }
 
 /// A `theme.metrics` object from JS. Every field is a pixel number.
