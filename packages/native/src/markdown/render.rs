@@ -23,6 +23,7 @@ use crate::theme::{Metrics, Theme};
 use crate::markdown_style::{number, color, tier, heading};
 include!("../markdown_inline.rs");
 include!("../markdown_stream.rs");
+include!("../stream_fade_md.rs");
 
 // ── Metrics ──────────────────────────────────────────────────────────
 //
@@ -80,6 +81,8 @@ pub struct FlatText {
     pub code_ranges: Vec<Range<usize>>,
     /// `(byte index, image)` for links that lead with an icon; the two placeholder characters at the index reserve its room.
     pub icons: Vec<(usize, Arc<gpui::RenderImage>)>,
+    /// Fading words of the live answer: (byte range, birth in epoch ms, fade ms).
+    pub fades: Vec<(Range<usize>, f64, f32)>,
 }
 
 /// Flatten inline runs into shaped-text inputs. Pure given a theme.
@@ -174,6 +177,7 @@ pub fn flatten_runs(runs: &[InlineRun], theme: &Theme, base_weight: FontWeight) 
         links,
         code_ranges,
         icons,
+        fades: Vec::new(),
     }
 }
 
@@ -398,7 +402,9 @@ fn text_element(
     let mut flat = flatten_runs(runs, &ctx.theme, weight);
     ctx.text_seen += 1;
     if ctx.stream_final && ctx.text_seen == ctx.text_total { stream_prepare(&mut flat, ctx); }
+    let fading = !flat.fades.is_empty();
     let inner = inline_element(&flat, size, line_height, None, ctx);
+    let inner = if fading { FadeEnd { child: inner }.into_any_element() } else { inner };
     div()
         .w_full()
         .min_w_0()
@@ -413,11 +419,12 @@ fn flat_text_element(flat: &FlatText, size: f32, ctx: &mut MdContext) -> AnyElem
     let sub = ctx.take_sub();
     let code_ranges = flat.code_ranges.clone();
     let icons = flat.icons.clone();
+    let fades = flat.fades.clone();
     let caret = ctx.caret.take();
     let text_len = flat.text.len();
     let wash = ctx.theme.code_wash;
     let radius = ctx.theme.metrics.md_inline_code_radius;
-    let extra: Option<Box<dyn Fn(&gpui::TextLayout, &mut gpui::Window)>> = if code_ranges.is_empty() && icons.is_empty() && caret.is_none()
+    let extra: Option<Box<dyn Fn(&gpui::TextLayout, &mut gpui::Window)>> = if code_ranges.is_empty() && icons.is_empty() && caret.is_none() && fades.is_empty()
     {
         None
     } else {
@@ -435,6 +442,7 @@ fn flat_text_element(flat: &FlatText, size: f32, ctx: &mut MdContext) -> AnyElem
                 }
             }
             paint_decorations(layout, window, &icons, 2, caret, text_len, size);
+            push_fade_words(layout, window, &fades);
         }))
     };
 

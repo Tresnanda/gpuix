@@ -97,7 +97,7 @@ fn paint_decorations(layout: &gpui::TextLayout, window: &mut Window, icons: &[(u
 
 fn stream_prepare(flat: &mut FlatText, ctx: &mut MdContext) {
     let Some(stream) = ctx.theme.markdown.stream.clone() else { return };
-    if !stream.born.is_empty() && apply_fade(flat, &stream.born, stream.fade_ms.unwrap_or(350.0) as f64) { ctx.animating = true; }
+    if !stream.born.is_empty() && stream_fade(flat, &stream.born, stream.fade_ms.unwrap_or(350.0) as f64) { ctx.animating = true; }
     if stream.caret && stream.caret_visible {
         let mut c = color(&stream.caret_color, ctx.theme.text);
         c.a *= 0.7;

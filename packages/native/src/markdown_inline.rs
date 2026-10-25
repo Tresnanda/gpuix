@@ -219,7 +219,12 @@ impl Element for InlineFlow {
             let icon_here: Vec<(usize, Arc<gpui::RenderImage>)> = data.icons.iter().filter(|(at, _)| *at == range.start).map(|(_, image)| (0, image.clone())).collect();
             let caret_here = if position.index + 1 == data.tokens.len() { data.caret } else { None };
             let size_here = data.size;
-            let extra_wash: Option<Box<dyn Fn(&gpui::TextLayout, &mut Window)>> = if is_code || !icon_here.is_empty() || caret_here.is_some() {
+            let fades_here: Vec<(Range<usize>, f64, f32)> = data.flat.fades.iter().filter_map(|(r, born, ms)| {
+                let a = range.start.max(r.start);
+                let b = range.end.min(r.end);
+                (a < b).then(|| (a - range.start..b - range.start, *born, *ms))
+            }).collect();
+            let extra_wash: Option<Box<dyn Fn(&gpui::TextLayout, &mut Window)>> = if is_code || !icon_here.is_empty() || caret_here.is_some() || !fades_here.is_empty() {
                 Some(Box::new(move |layout, window| {
                     if is_code {
                         for rect in range_rects(layout, &(0..len), pad, inset) {
@@ -227,6 +232,7 @@ impl Element for InlineFlow {
                         }
                     }
                     paint_decorations(layout, window, &icon_here, len.min(2), caret_here, len, size_here);
+                    push_fade_words(layout, window, &fades_here);
                 }))
             } else {
                 None
@@ -335,6 +341,7 @@ fn inline_element(flat: &FlatText, size: f32, line: f32, align: Option<TableAlig
                 links: flat.links.clone(),
                 code_ranges: flat.code_ranges.clone(),
                 icons: flat.icons.clone(),
+                fades: flat.fades.clone(),
             },
             tokens,
             font_sans: ctx.theme.font_sans.clone(),
