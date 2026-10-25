@@ -2156,7 +2156,11 @@ impl GpuixRenderer {
     pub fn set_rich_editor_image(&self, src: String, bytes: Buffer) -> Result<()> {
         let bytes = bytes.to_vec();
         #[cfg(target_os = "macos")]
-        return update_window_without_view(move |_, cx| crate::rich_editor::set_image(src, bytes, cx))?;
+        return update_window_without_view(move |window, cx| {
+            let result = crate::rich_editor::set_image(src, bytes, cx);
+            crate::rich_editor::trim_images(window, cx);
+            result
+        })?;
         #[cfg(not(target_os = "macos"))]
         Err(Error::from_reason("The rich editor is currently macOS-only"))
     }
@@ -2187,6 +2191,28 @@ impl GpuixRenderer {
     pub fn get_markdown_document_stats(&self) -> Result<serde_json::Value> {
         update_window(|view, _, _| view.markdown_documents.lock().unwrap().stats())
     }
+    #[napi]
+    pub fn has_rich_editor_image(&self, src: String) -> Result<bool> {
+        #[cfg(target_os = "macos")]
+        return update_window_without_view(move |_, _| Ok(crate::rich_editor::has_image(&src)))?;
+        #[cfg(not(target_os = "macos"))]
+        Err(Error::from_reason("The rich editor is currently macOS-only"))
+    }
+
+    #[napi]
+    pub fn get_memory_stats(&self) -> Result<serde_json::Value> {
+        #[cfg(target_os = "macos")]
+        return update_window_without_view(move |window, cx| Ok(serde_json::json!({
+            "images":crate::custom_elements::img::image_memory_stats(cx),
+            "editorImages":crate::rich_editor::image_memory_stats(),
+            "metalGauges":gpui::memory_debug_stats(),
+            "elementArenaBytes":window.element_arena_memory_bytes(),
+            "layoutNodeHighWater":window.layout_memory_peak_nodes(),
+        })))?;
+        #[cfg(not(target_os = "macos"))]
+        Err(Error::from_reason("Memory counters are currently macOS-only"))
+    }
+
     #[napi]
     pub fn zoom_window(&self) -> Result<()> {
         #[cfg(target_os = "macos")]
@@ -5478,6 +5504,13 @@ impl gpui::Render for GpuixView {
         // Ensure custom element instances are destroyed when their IDs disappear.
         self.custom_registry
             .prune_missing(|id| tree.elements.contains_key(&id), window);
+
+        // Complete the draw before evicting: a newly mounted lightbox/overscan
+        // row must acquire its lease before its old owner can be reclaimed.
+        cx.defer_in(window, |_, window, cx| {
+            crate::custom_elements::img::trim_image_memory(window, cx);
+            crate::rich_editor::trim_images(window, cx);
+        });
 
         // Clean up scroll handles for destroyed elements (IDs removed from tree).
         // Scrollability-based cleanup (element still exists but style changed
