@@ -221,6 +221,10 @@ pub struct SelectableText {
     pub extra_wash: Option<Box<dyn Fn(&TextLayout, &mut Window)>>,
     /// Clickable byte ranges and their payloads, typically link URLs.
     pub hover_link_color: Option<Hsla>,
+    /// Bytes of a link hovered anywhere in the same flow, the underline color,
+    /// and whether the link continues past this fragment (its underline then
+    /// reaches the next fragment, leaving no hairline gap).
+    pub hover_range: Option<(Range<usize>, Hsla, bool)>,
     pub shared_links: Option<Arc<Vec<(Range<usize>, String)>>>,
     pub links: Vec<(Range<usize>, String)>,
     /// Called with the payload of the range under a click.
@@ -254,6 +258,7 @@ impl SelectableText {
             run_provider: None,
             extra_wash: None,
             hover_link_color: None,
+            hover_range: None,
             shared_links: None,
             links: Vec::new(),
             on_link: None,
@@ -280,6 +285,7 @@ pub fn selectable_text(opts: SelectableText) -> gpui::AnyElement {
         links,
         shared_links,
         hover_link_color,
+        hover_range,
         on_link,
         selectable,
         group,
@@ -348,6 +354,16 @@ pub fn selectable_text(opts: SelectableText) -> gpui::AnyElement {
                 });
             }
             PAINTED.with(|p| p.borrow_mut().push(text.clone()));
+            if let Some((range, color, continues)) = &hover_range {
+                let rects = range_rects(&layout, range, 0.0, 0.0);
+                let last = rects.len().saturating_sub(1);
+                for (index, mut rect) in rects.into_iter().enumerate() {
+                    rect.origin.y += rect.size.height - gpui::px(2.0);
+                    rect.size.height = gpui::px(1.0);
+                    if *continues && index == last { rect.size.width += gpui::px(1.0); }
+                    window.paint_quad(quad(rect, gpui::px(0.0), *color, gpui::px(0.0), gpui::transparent_black(), Default::default()));
+                }
+            }
             if let Some(color) = hover_link_color {
                 let hit = |position| layout.index_for_position(position).ok().and_then(|ix| links.iter().position(|(r,_)|r.contains(&ix)));
                 let hovered = hit(window.mouse_position());
