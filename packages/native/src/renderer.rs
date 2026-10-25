@@ -2144,6 +2144,24 @@ impl GpuixRenderer {
     }
 
     #[napi]
+    pub fn rich_editor_command(&self, element_id: f64, command: serde_json::Value) -> Result<serde_json::Value> {
+        let id = to_element_id(element_id)?;
+        #[cfg(target_os = "macos")]
+        return update_window_without_view(move |window, cx| crate::rich_editor::command(id, command, window, cx))?;
+        #[cfg(not(target_os = "macos"))]
+        Err(Error::from_reason("The rich editor is currently macOS-only"))
+    }
+
+    #[napi]
+    pub fn set_rich_editor_image(&self, src: String, bytes: Buffer) -> Result<()> {
+        let bytes = bytes.to_vec();
+        #[cfg(target_os = "macos")]
+        return update_window_without_view(move |_, cx| crate::rich_editor::set_image(src, bytes, cx))?;
+        #[cfg(not(target_os = "macos"))]
+        Err(Error::from_reason("The rich editor is currently macOS-only"))
+    }
+
+    #[napi]
     pub fn zoom_window(&self) -> Result<()> {
         #[cfg(target_os = "macos")]
         return update_window(|_view, window, _cx| window.zoom_window());
@@ -5259,7 +5277,7 @@ impl GpuixView {
             .iter()
             .find(|(_, handle)| handle.id() == focused)?;
         let element = tree.elements.get(&id)?;
-        if matches!(element.element_type.as_str(), "input" | "textarea") {
+        if matches!(element.element_type.as_str(), "input" | "textarea" | "rich-editor") {
             return None;
         }
         let path: Vec<u64> = std::iter::successors(Some(id), |id| {
@@ -5292,7 +5310,7 @@ impl GpuixView {
                 continue;
             };
             let tab_index = element.tab_index().or_else(|| {
-                matches!(element.element_type.as_str(), "input" | "textarea").then_some(0)
+                matches!(element.element_type.as_str(), "input" | "textarea" | "rich-editor").then_some(0)
             });
 
             if !self.focus_handles.contains_key(&id) {

@@ -326,6 +326,7 @@ impl CustomElementRegistry {
         registry.register(Box::new(code::CodeFactory));
         registry.register(Box::new(diff::DiffFactory));
         registry.register(Box::new(markdown::MarkdownFactory));
+        registry.register(Box::new(crate::rich_editor::RichEditorFactory));
         registry
     }
 

@@ -16,6 +16,8 @@ mod accessibility;
 mod app_menu;
 mod automation;
 mod cache_island;
+mod rich_doc;
+mod rich_editor;
 mod kybern_icon;
 mod scroll_layout;
 mod clipboard;
