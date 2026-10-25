@@ -118,6 +118,8 @@ pub struct DiffElement {
     fingerprint: Option<u64>,
     /// Persists across frames so the scroll position survives a re-render.
     list_state: Option<gpui::ListState>,
+    cache_layout: bool,
+    layout_revision: u64,
     /// Metrics hash the list state was last sized for. Row heights come from
     /// the theme now, so a metrics-only change makes the list's cached
     /// measurements stale even though the parse is untouched.
@@ -356,8 +358,10 @@ impl CustomElement for DiffElement {
             let selection = selection.clone();
             let callback = callback.clone();
             let row_theme = row_theme.clone();
+            let cache_layout = self.cache_layout;
+            let layout_revision = self.layout_revision;
             gpui::list(state, move |ix, _window, _app| {
-                render_row(
+                let row = render_row(
                     &row_data,
                     ix,
                     RowContext {
@@ -373,7 +377,8 @@ impl CustomElement for DiffElement {
                         theme: &row_theme,
                         radius,
                     },
-                )
+                );
+                if cache_layout { crate::scroll_layout::apply(row, [element_id, ix as u64, layout_revision]) } else { row }
             })
             .with_sizing_behavior(gpui::ListSizingBehavior::Auto)
             .flex_1()
@@ -436,7 +441,9 @@ impl CustomElement for DiffElement {
     }
 
     fn set_prop(&mut self, key: &str, value: serde_json::Value) {
+        self.layout_revision = self.layout_revision.wrapping_add(1);
         match key {
+            "cacheLayout" => self.cache_layout = value.as_bool().unwrap_or(false),
             "patch" => self.patch = value.as_str().unwrap_or("").to_string(),
             "wordDiff" => self.show_word_diff = value.as_bool().unwrap_or(false),
             "scroll" => self.scroll = value.as_bool().unwrap_or(false),
@@ -462,6 +469,7 @@ impl CustomElement for DiffElement {
     fn supported_props(&self) -> &'static [&'static str] {
         &[
             "patch",
+            "cacheLayout",
             "wordDiff",
             "scroll",
             "maxLines",

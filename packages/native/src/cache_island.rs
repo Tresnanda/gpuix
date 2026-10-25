@@ -170,6 +170,10 @@ pub(crate) fn island_element(
     if ctx.island_root == Some(id) || (ctx.in_virtual_row && inline_list_islands()) {
         return None;
     }
+    if element.custom_props().get("cacheLayout").and_then(|v|v.as_bool()).unwrap_or(false)
+        && ctx.motion_states.values().any(|state|state.is_active(ctx.now)) {
+        return None;
+    }
     let fill = fills_parent(element);
     let outer = match element.style.as_deref() {
         Some(style) => outer_style(style, fill)?,
@@ -230,6 +234,10 @@ pub(crate) fn island_element(
         .view
         .clone()
         .cached(gpui::StyleRefinement::default().flex_grow_1().min_h_0());
+    let cached = if element.custom_props().get("cacheLayout").and_then(|v|v.as_bool()).unwrap_or(false) {
+        let root_revision = ctx.tree.root_id.and_then(|id|ctx.tree.elements.get(&id)).map(|root|root.subtree_revision).unwrap_or(0);
+        cached.independent_scroll_cache(root_revision)
+    } else {cached};
     let wrapper = crate::renderer::apply_styles(gpui::div(), &outer)
         .flex()
         .flex_col()

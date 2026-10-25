@@ -2048,6 +2048,25 @@ impl GpuixRenderer {
         self.request_invalidate()
     }
     #[napi]
+    pub fn simulate_scroll_phase(&self, x:f64, y:f64, delta_x:f64, delta_y:f64, phase:String, modifiers:Option<String>) -> Result<()> {
+        let phase=match phase.as_str() {
+            "started"=>gpui::TouchPhase::Started,"moved"=>gpui::TouchPhase::Moved,
+            "ended"=>gpui::TouchPhase::Ended,"cancelled"=>gpui::TouchPhase::Cancelled,
+            _=>return Err(Error::from_reason("Unknown native scroll phase")),
+        };
+        let modifiers=crate::automation::parse_modifiers(modifiers.as_deref());
+        #[cfg(target_os="macos")]
+        return update_window_without_view(move |window,cx| {
+            window.dispatch_event(gpui::PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                position:gpui::point(gpui::px(x as f32),gpui::px(y as f32)),
+                delta:gpui::ScrollDelta::Pixels(gpui::point(gpui::px(delta_x as f32),gpui::px(delta_y as f32))),
+                modifiers,touch_phase:phase,
+            }),cx);
+        });
+        #[cfg(not(target_os="macos"))]
+        {let _=(x,y,delta_x,delta_y,phase,modifiers);Err(Error::from_reason("Phase injection requires macOS"))}
+    }
+    #[napi]
     pub fn zoom_window(&self) -> Result<()> {
         #[cfg(target_os = "macos")]
         return update_window(|_view, window, _cx| window.zoom_window());
@@ -5304,6 +5323,16 @@ impl gpui::Render for GpuixView {
 
         crate::syntax_document::activate(&self.syntax_documents);
         window.set_window_title(&self.window_title);
+        let scroll_targets: Vec<u64> = self.tree.lock().unwrap().elements.iter()
+            .filter_map(|(id,element)| if element.element_type != "virtual-list" && element.element_type != "diff" {None} else {element.custom_props().get("cacheLayout").and_then(|v|v.as_bool()).unwrap_or(false).then_some(*id)}).collect();
+        window.set_scroll_input_target(move |position| {
+            let x=f64::from(f32::from(position.x));let y=f64::from(f32::from(position.y));
+            scroll_targets.iter().find_map(|id| {
+                let b=crate::automation::get_bounds(*id)?;
+                let [cx,cy,cw,ch]=b.clip.unwrap_or([b.x,b.y,b.width,b.height]);
+                (x>=b.x.max(cx)&&y>=b.y.max(cy)&&x<(b.x+b.width).min(cx+cw)&&y<(b.y+b.height).min(cy+ch)).then_some(*id)
+            })
+        });
 
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
         if let Some(id) = PENDING_FOCUS_ELEMENT.with(|pending| pending.borrow_mut().take()) {
@@ -5712,6 +5741,8 @@ fn build_virtual_list(
     // Cloned, not copied: gpui runs this processor once per requested row, so
     // the captured value must survive every call.
     let inherited = ctx.inherited.clone();
+    let cache_layout = element.custom_props().get("cacheLayout").and_then(|v|v.as_bool()).unwrap_or(false);
+    let layout_revision = element.subtree_revision;
     let render_item = cx.processor(move |view, index: usize, window, cx| {
         let Some(entry) = view.virtual_lists.get(&list_id) else {
             return unmounted_virtual_row(1.0);
@@ -5720,7 +5751,8 @@ fn build_virtual_list(
             // Empty measures as 0 and poisons ListState. Keep the estimate.
             return unmounted_virtual_row(entry.config.estimated_item_height.unwrap_or(1.0));
         };
-        view.build_virtual_child(list_id, index, child_id, inherited.clone(), window, cx)
+        let row = view.build_virtual_child(list_id, index, child_id, inherited.clone(), window, cx);
+        if cache_layout { crate::scroll_layout::apply(row, [list_id, child_id, layout_revision]) } else { row }
     });
     let scroll_state = list_state.clone();
     let mut list = gpui::list(list_state, render_item)
@@ -5732,7 +5764,9 @@ fn build_virtual_list(
     if let Some(style) = element.style.as_deref() {
         list = apply_styles(list, style);
     }
-    let list = apply_accessibility(list, element.custom_props(), None).into_any_element();
+    let list = apply_accessibility(list, element.custom_props(), None);
+    let list = if cache_layout { crate::automation::track_own_bounds(list, element.id) } else { list };
+    let list = list.into_any_element();
     match element
         .style
         .as_deref()
