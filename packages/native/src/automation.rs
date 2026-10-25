@@ -54,6 +54,7 @@ pub fn bounds_frame_reset() -> impl IntoElement {
     canvas(
         |_, _, _| (),
         move |_, _, _, _| {
+            SUBTREE_BOUNDS.with(|map|BOUNDS.with(|bounds|map.borrow_mut().retain(|id,_|bounds.borrow().contains_key(id))));
             BOUNDS.with(|cell| cell.borrow_mut().clear());
         },
     )
@@ -101,7 +102,7 @@ where
     el.on_painted(move |bounds, window, cx| {
         record_clipped_bounds(id, bounds, window);
         if let Some(selectable) = selection_start {
-            crate::text::record_start_region(bounds, selectable);
+            crate::text::record_start_region(bounds, selectable,window.subtree_geometry());
         }
         if let Some(report) = &report {
             report(bounds, cx);
@@ -114,6 +115,7 @@ where
 pub type PaintReporter = Rc<dyn Fn(Bounds<Pixels>, &mut App)>;
 
 fn record_clipped_bounds(id: u64, bounds: Bounds<Pixels>, window: &Window) {
+    SUBTREE_BOUNDS.with(|map| {let mut map=map.borrow_mut(); if let Some(geometry)=window.subtree_geometry(){map.insert(id,geometry);}else{map.remove(&id);}});
     let clipped = bounds.intersect(&window.content_mask().bounds).intersect(&Bounds { origin: point(px(0.), px(0.)), size: window.viewport_size() });
     let mut value = ElementBounds::from_gpui(bounds);
     if clipped.size.width > px(0.) && clipped.size.height > px(0.) {
@@ -150,7 +152,7 @@ pub fn bounds_tracker(id: u64, selection_start: Option<bool>) -> impl IntoElemen
         move |bounds, _, window, _| {
             record_clipped_bounds(id, bounds, window);
             if let Some(selectable) = selection_start {
-                crate::text::record_start_region(bounds, selectable);
+                crate::text::record_start_region(bounds, selectable,window.subtree_geometry());
             }
         },
     )
@@ -463,3 +465,5 @@ mod tests {
         );
     }
 }
+
+include!("subtree_bounds.rs");

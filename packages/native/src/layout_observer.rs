@@ -54,13 +54,7 @@ impl Observers {
 fn rect(b: automation::ElementBounds) -> Value {
     json!({"x":b.x,"y":b.y,"width":b.width,"height":b.height})
 }
-pub(crate) fn after_paint(observers: Shared, tree: std::sync::Arc<std::sync::Mutex<RetainedTree>>) -> impl IntoElement {
-    gpui::canvas(|_,_,_| (), move |_,_,window,cx| {
-  if observers.borrow().entries.is_empty() { return; }
-  let observers = observers.clone(); let tree = tree.clone();
-  let size = window.viewport_size(); let scale = window.scale_factor();
-  // Deferred app work runs after all ordinary/deferred paint and cached replay.
-  cx.defer(move |_| {
+pub(crate) fn notify(observers:&Shared,tree:&std::sync::Arc<std::sync::Mutex<RetainedTree>>,size:gpui::Size<gpui::Pixels>,scale:f32) {
    let tree = tree.lock().unwrap(); let mut state = observers.borrow_mut(); state.frame += 1; let frame = state.frame;
    for entry in state.entries.values_mut() {
     let mut value = if entry.target.is_null() { json!({"width":f32::from(size.width),"height":f32::from(size.height),"scaleFactor":scale}) }
@@ -77,6 +71,13 @@ pub(crate) fn after_paint(observers: Shared, tree: std::sync::Arc<std::sync::Mut
     entry.last = Some(value.clone()); value["frame"] = json!(frame);
     entry.callback.call(Ok(value), ThreadsafeFunctionCallMode::NonBlocking);
    }
-  });
+}
+pub(crate) fn after_paint(observers: Shared, tree: std::sync::Arc<std::sync::Mutex<RetainedTree>>) -> impl IntoElement {
+    gpui::canvas(|_,_,_| (), move |_,_,window,cx| {
+  if observers.borrow().entries.is_empty() { return; }
+  let observers = observers.clone(); let tree = tree.clone();
+  let size = window.viewport_size(); let scale = window.scale_factor();
+  // Deferred app work runs after all ordinary/deferred paint and cached replay.
+  cx.defer(move |_| notify(&observers,&tree,size,scale));
  }).absolute().w(gpui::px(0.)).h(gpui::px(0.))
 }

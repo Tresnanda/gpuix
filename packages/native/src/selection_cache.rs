@@ -28,7 +28,7 @@ pub(crate) fn selection_snapshot(from: SelectionCursor) -> SelectionSnapshot {
 }
 pub(crate) fn replay_selection(snapshot: &SelectionSnapshot) {
     REGISTRY.with(|r| r.borrow_mut().extend(snapshot.runs.iter().cloned()));
-    START_REGIONS.with(|r| r.borrow_mut().extend(snapshot.regions.iter().cloned()));
+    START_REGIONS.with(|r| {let values=crate::subtree_translation::values();r.borrow_mut().extend(snapshot.regions.iter().cloned().map(|mut region|{if let Some(geometry)=&mut region.geometry{region.bounds.origin+=geometry.translate(&values);}region}));});
     PAINTED.with(|r| r.borrow_mut().extend(snapshot.painted.iter().cloned()));
     HIGHLIGHTS.with(|r| r.borrow_mut().extend(snapshot.highlights.iter().cloned()));
 }

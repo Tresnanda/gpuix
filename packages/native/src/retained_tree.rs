@@ -254,6 +254,7 @@ pub struct RetainedTree {
     keyboard_focus_dim: bool,
     next_revision: u64,
     pub(crate) paint_updates: HashSet<u64>,
+    pub(crate) subtree_translation_updates: HashSet<u64>,
     pub(crate) full_redraw: bool,
     pub(crate) paint_replay_enabled: bool,
     /// Something a frame would draw changed since the last `take_dirty`. A batch
@@ -275,6 +276,7 @@ impl RetainedTree {
             keyboard_focus_dim: true,
             next_revision: 1,
             paint_updates: HashSet::new(),
+            subtree_translation_updates: HashSet::new(),
             full_redraw: true,
             paint_replay_enabled: false,
             dirty: false,
@@ -396,6 +398,8 @@ impl RetainedTree {
     fn destroy_element_recursive(&mut self, id: u64, destroyed: &mut Vec<u64>) {
         if let Some(element) = self.elements.remove(&id) {
             self.motion_ids.remove(&id);
+            self.subtree_translation_updates.remove(&id);
+            crate::subtree_translation::forget(id);
             self.focusable_ids.remove(&id);
             self.anchored_count -= usize::from(element.element_type == "anchored");
             destroyed.push(id);
@@ -522,6 +526,8 @@ impl RetainedTree {
         let mut changed = false;
         let is_highlight = key == "highlight";
         let is_motion = key == "motion";
+        let is_translation = key == "paintTranslate" && crate::subtree_translation::valid(&value);
+        let had_translation = self.elements.get(&id).is_some_and(|e|e.custom_props().contains_key("paintTranslate"));
         let is_tab_index = key == "tabIndex";
         let was_declaration = self
             .elements
@@ -570,7 +576,16 @@ impl RetainedTree {
                 self.motion_ids.remove(&id);
             }
         }
-        self.mark_render_changed(id);
+        if is_translation && had_translation && self.elements.get(&id).is_some_and(|e|e.custom_props().contains_key("paintTranslate")) {self.subtree_translation_updates.insert(id); self.dirty = true;}
+        else {
+            // Installing a scope on an already-cached subtree needs one fresh
+            // paint so every descendant records its new scope and raw masks.
+            if is_translation && !had_translation {
+                let mut pending=self.elements.get(&id).map(|e|e.children.clone()).unwrap_or_default();
+                while let Some(child)=pending.pop(){if let Some(e)=self.elements.get(&child){pending.extend(&e.children);}self.mark_render_changed(child);}
+            }
+            self.mark_render_changed(id);
+        }
         let is_declaration = self
             .elements
             .get(&id)

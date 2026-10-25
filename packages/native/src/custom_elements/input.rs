@@ -351,6 +351,10 @@ impl TextEditorElement {
 }
 
 impl CustomElement for TextEditorElement {
+    fn translate_subtree(&mut self,delta:Point<Pixels>,cx:&mut Context<crate::renderer::GpuixView>){
+        if let Some(state)=&self.state{state.update(cx,|state,_|{if let Some(bounds)=&mut state.last_bounds{bounds.origin+=delta;}});}
+    }
+
     fn render(
         &mut self,
         ctx: CustomRenderContext,

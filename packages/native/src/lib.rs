@@ -19,6 +19,7 @@ mod cache_island;
 mod clipboard;
 mod frame_clock;
 mod paint_replay;
+mod subtree_translation;
 mod backdrop;
 mod edge_fade;
 mod diff_style;

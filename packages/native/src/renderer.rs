@@ -1160,7 +1160,7 @@ impl GpuixRenderer {
         // window.refresh() (which disables every cache).
         #[cfg(target_os = "macos")]
         return update_window(|view, _window, cx| {
-            crate::paint_replay::invalidate(view, _window, cx);
+            if !crate::subtree_translation::invalidate(view, _window, cx) { crate::paint_replay::invalidate(view, _window, cx); }
         });
 
         #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
@@ -2038,6 +2038,14 @@ impl GpuixRenderer {
     #[napi]
     pub fn get_motion_capabilities(&self) -> serde_json::Value {
         serde_json::json!({"rotate":true,"physicalSprings":true})
+    }
+    #[napi]
+    pub fn set_subtree_translation(&self, element_id: u32, translation: serde_json::Value) -> Result<()> {
+        let x=translation.get("translateX").and_then(|v|v.as_f64()).unwrap_or(0.);
+        let y=translation.get("translateY").and_then(|v|v.as_f64()).unwrap_or(0.);
+        if !x.is_finite() || !y.is_finite() || x.abs()>f32::MAX as f64 || y.abs()>f32::MAX as f64 {return Err(Error::from_reason("Translation must fit finite logical pixels"));}
+        self.tree.lock().unwrap().set_custom_prop(element_id as u64,"paintTranslate".into(),serde_json::json!({"initial":false,"animate":{"translateX":x,"translateY":y},"transition":{"duration":0}}));
+        self.request_invalidate()
     }
     #[napi]
     pub fn zoom_window(&self) -> Result<()> {
@@ -3858,7 +3866,7 @@ pub(crate) struct GpuixView {
     pub(crate) virtual_lists: HashMap<u64, VirtualListEntry>,
     /// Kybern patch: cached islands (`cache_island.rs`).
     pub(crate) islands: crate::cache_island::Islands,
-    layout_observers: crate::layout_observer::Shared,
+    pub(crate) layout_observers: crate::layout_observer::Shared,
     frame_clock: crate::frame_clock::Shared,
     syntax_documents: crate::syntax_document::Shared,
     /// Latest pointer sample and list during selection edge scrolling.
@@ -5341,6 +5349,8 @@ impl gpui::Render for GpuixView {
                 });
             }
         }
+        crate::subtree_translation::sync(&tree,self.clock.now());
+        crate::subtree_translation::arm(self,window,cx);
         // Build the element tree. custom_registry, focus_handles, and scroll_handles
         // are different fields of self, so Rust allows borrowing all simultaneously.
         let theme = Theme::dark();
@@ -5481,7 +5491,7 @@ pub(crate) fn build_element(
     // Kybern patch: cached islands (`cache_island.rs`).
     if crate::cache_island::is_island(element) {
         if let Some(island) = crate::cache_island::island_element(id, element, ctx, window, cx) {
-            return island;
+            return crate::subtree_translation::apply(island,id,ctx.tree,ctx.now);
         }
     }
 
@@ -5572,6 +5582,7 @@ pub(crate) fn build_element(
     let built = if element.element_type == "anchored" { built } else { crate::backdrop::apply(built, element.custom_props().get("backdrop"), style.and_then(|s|s.opacity).unwrap_or(1.0) as f32) };
     let built = crate::edge_fade::apply(built, element.custom_props().get("edgeFade"));
     let built = crate::paint_replay::apply(built, element, style);
+    let built = if ctx.island_root != Some(id) {crate::subtree_translation::apply(built,id,ctx.tree,ctx.now)} else {built};
     ctx.inherited = parent_inherited;
     let translated = ctx.motion_states.get(&id).and_then(|state| state.visible_style(ctx.now));
     if let Some(motion) = translated {
@@ -7367,7 +7378,7 @@ pub fn apply_batch_to_tree(tree: &mut RetainedTree, bytes: &[u8]) -> BatchResult
     // Phase 3: apply. Cannot fail.
     let mut destroyed_ids: Vec<f64> = Vec::new();
     for batch_op in parsed {
-        if !matches!(&batch_op, BatchOp::SetStyle { .. }) { tree.full_redraw = true; }
+        if !matches!(&batch_op, BatchOp::SetStyle { .. }) && !matches!(&batch_op, BatchOp::SetCustomProp {key,..} if key == "paintTranslate") { tree.full_redraw = true; }
         match batch_op {
             BatchOp::CreateElement { id, element_type } => {
                 tree.create_element(id, element_type);

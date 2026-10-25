@@ -206,6 +206,8 @@ pub(crate) fn wire_standard_events<E: gpui::StatefulInteractiveElement>(
 ///   3. Each GPUI frame calls render() → returns AnyElement
 ///   4. React unmounts → destroy() for cleanup
 pub trait CustomElement: 'static {
+    fn translate_subtree(&mut self,_delta:gpui::Point<gpui::Pixels>,_cx:&mut gpui::Context<crate::renderer::GpuixView>) {}
+
     /// Build GPUI elements for this frame.
     /// Called on every GPUI render cycle (immediate mode).
     fn render(
@@ -564,5 +566,11 @@ mod tests {
         assert!(registry.get_or_create(42, "first").is_some());
         assert!(registry.get_or_create(42, "second").is_some());
         assert_eq!(destroyed.get(), 1);
+    }
+}
+
+impl CustomElementRegistry {
+    pub(crate) fn translate_subtrees(&mut self,deltas:&std::collections::HashMap<u64,gpui::Point<gpui::Pixels>>,cx:&mut gpui::Context<crate::renderer::GpuixView>){
+        for (id,delta) in deltas {if let Some(entry)=self.instances.get_mut(id){entry.element.translate_subtree(*delta,cx);}}
     }
 }

@@ -54,6 +54,7 @@ struct RegEntry {
 struct StartRegion {
     bounds: Bounds<gpui::Pixels>,
     selectable: bool,
+    geometry: Option<gpui::SubtreeGeometry>,
 }
 
 /// One highlight wash painted this frame, with the boxes it actually drew.
@@ -119,8 +120,8 @@ pub fn selection_frame_reset(
 ///
 /// Only `track_host_bounds` and `bounds_tracker` call this, so a start region is
 /// always the same box automation already uses. Last painted region that contains the point wins.
-pub fn record_start_region(bounds: Bounds<gpui::Pixels>, selectable: bool) {
-    START_REGIONS.with(|r| r.borrow_mut().push(StartRegion { bounds, selectable }));
+pub fn record_start_region(bounds: Bounds<gpui::Pixels>, selectable: bool,geometry:Option<gpui::SubtreeGeometry>) {
+    START_REGIONS.with(|r| r.borrow_mut().push(StartRegion { bounds, selectable,geometry }));
 }
 
 /// Last painted start region that contains `position`.
@@ -822,4 +823,10 @@ mod tests {
         assert_eq!(rects[1].origin, point(px(0.0), px(22.0)));
         assert_eq!(rects[1].size, size(px(40.0), px(22.0)));
     }
+}
+
+pub(crate) fn translate_subtree_selection(values:&std::collections::HashMap<u64,gpui::Point<gpui::Pixels>>,deltas:&std::collections::HashMap<u64,gpui::Point<gpui::Pixels>>) {
+    REGISTRY.with(|r|for run in r.borrow_mut().iter_mut(){if let Some(delta)=run.key.split_once(':').and_then(|(id,_)|id.parse().ok()).and_then(|id|deltas.get(&id)){run.layout.translate(*delta);}});
+    START_REGIONS.with(|r|for region in r.borrow_mut().iter_mut(){if let Some(geometry)=&mut region.geometry{region.bounds.origin+=geometry.translate(values);}});
+    HIGHLIGHTS.with(|r|for highlight in r.borrow_mut().iter_mut(){if let Some(delta)=deltas.get(&highlight.element_id){for rect in &mut highlight.rects{rect.0+=delta.x.as_f32();rect.1+=delta.y.as_f32();}}});
 }
