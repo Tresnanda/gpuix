@@ -329,6 +329,8 @@ struct TextEditorElement {
     intercept_keys: Vec<String>,
     key_interceptor: Option<gpui::Subscription>,
     secure: bool,
+    code: CodeEditorProps,
+    theme_generation: u64,
 }
 
 impl TextEditorElement {
@@ -346,6 +348,8 @@ impl TextEditorElement {
             intercept_keys: Vec::new(),
             key_interceptor: None,
             secure: false,
+            code: CodeEditorProps::default(),
+            theme_generation: 0,
         }
     }
 }
@@ -430,6 +434,7 @@ impl CustomElement for TextEditorElement {
                     undo_stack: VecDeque::new(),
                     redo_stack: Vec::new(),
                     last_edit: None,
+                    code: CodeEditor::default(),
                 })
             })
             .clone();
@@ -482,6 +487,7 @@ impl CustomElement for TextEditorElement {
             if prop_changed {
                 state.sync_prop_value(self.value.clone(), cx);
             }
+            state.apply_code_props(&self.code, &self.theme, self.theme_generation, cx);
         });
         self.last_prop_value = Some(self.value.clone());
 
@@ -573,6 +579,7 @@ impl CustomElement for TextEditorElement {
 
     fn set_prop(&mut self, key: &str, value: serde_json::Value) {
         match key {
+            key if code_editor_prop(&mut self.code, key, &value) => {}
             "value" => self.value = value.as_str().unwrap_or_default().to_string(),
             "placeholder" => self.placeholder = value.as_str().unwrap_or_default().to_string(),
             "secure" => self.secure = !self.multiline && value.as_bool().unwrap_or(false),
@@ -585,7 +592,10 @@ impl CustomElement for TextEditorElement {
                     .unwrap_or(if self.multiline { 10 } else { 1 })
                     as usize
             }
-            "theme" => self.theme = Theme::from_prop(Some(&value)),
+            "theme" => {
+                self.theme = Theme::from_prop(Some(&value));
+                self.theme_generation += 1;
+            }
             _ => {}
         }
     }
@@ -600,6 +610,12 @@ impl CustomElement for TextEditorElement {
             "interceptKeys",
             "secure",
             "theme",
+            "codeEditor",
+            "softWrap",
+            "showLineNumbers",
+            "syntaxDocument",
+            "syntaxRevision",
+            "revealLine",
         ]
     }
 
@@ -740,10 +756,12 @@ struct TextEditorState {
     undo_stack: VecDeque<EditSnapshot>,
     redo_stack: Vec<EditSnapshot>,
     last_edit: Option<LastEdit>,
+    code: CodeEditor,
 }
 
 include!("../input_api.rs");
 include!("../input_decorations.rs");
+include!("../code_editor.rs");
 
 impl TextEditorState {
     fn update_secure_input(&mut self, window: &Window) {
@@ -1410,6 +1428,9 @@ impl TextEditorState {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.code_scroll_wheel(event, cx) {
+            return;
+        }
         let Some(bounds) = self.last_bounds else {
             return;
         };
@@ -1512,13 +1533,19 @@ impl TextEditorState {
             .collect(),
             _ => vec![run(display.len(), false)],
         };
-        let runs = if !is_placeholder && !self.secure { self.decorated_runs(style, color) } else { runs };
-        let wrap_width = self.multiline.then_some(width);
+        let code_runs = !is_placeholder && self.code_runs(style, color);
+        let runs = if code_runs {
+            std::mem::take(&mut self.code.runs.as_mut().unwrap().runs)
+        } else if !is_placeholder && !self.secure { self.decorated_runs(style, color) } else { runs };
+        let wrap_width = self.code_wrap_width(width, style, font_size, window);
         let lines = window
             .text_system()
             .shape_text(display, font_size, &runs, wrap_width, None)
             .map(|lines| lines.into_vec())
             .unwrap_or_default();
+        if code_runs {
+            if let Some(cache) = self.code.runs.as_mut() { cache.runs = runs; }
+        }
         let mut line_starts = Vec::with_capacity(lines.len());
         let mut offset = 0;
         for line in &lines {
@@ -1554,7 +1581,7 @@ impl TextEditorState {
                 {
                     self.scroll_top = cursor_top + f32::from(self.line_height) - viewport_height;
                 }
-                if !self.multiline {
+                if !self.multiline || self.code_scrolls_x() {
                     let cursor_left = f32::from(cursor.x);
                     if cursor_left < self.scroll_left {
                         self.scroll_left = cursor_left;
@@ -1567,7 +1594,7 @@ impl TextEditorState {
         self.scroll_top = self
             .scroll_top
             .clamp(0.0, (self.content_height - viewport_height).max(0.0));
-        self.scroll_left = if self.multiline {
+        self.scroll_left = if self.multiline && !self.code_scrolls_x() {
             0.0
         } else {
             self.scroll_left
@@ -1816,6 +1843,7 @@ impl gpui::Render for TextEditorState {
             })
             .w_full()
             .min_w_0()
+            .when(self.code.props.enabled, |editor| editor.h_full())
             .child(EditorTextElement {
                 input: cx.entity(),
                 min_rows: self.min_rows,
@@ -1852,10 +1880,14 @@ impl gpui::Element for EditorTextElement {
         _: Option<&GlobalElementId>,
         _: Option<&gpui::InspectorElementId>,
         window: &mut Window,
-        _: &mut App,
+        cx: &mut App,
     ) -> (LayoutId, ()) {
         let mut style = Style::default();
         style.size.width = relative(1.0).into();
+        let code = self.input.read(cx).code.props.enabled;
+        if code {
+            style.size.height = relative(1.0).into();
+        }
         let input = self.input.clone();
         let text_style = window.text_style();
         let min_rows = self.min_rows;
@@ -1866,12 +1898,12 @@ impl gpui::Element for EditorTextElement {
                 _ => px(320.0),
             });
             let (content_height, line_height) = input.update(cx, |input, _| {
-                let content_height = input.layout_text(width, &text_style, window);
+                let content_height = if code { f32::from(text_style.line_height_in_pixels(window.rem_size())) } else { input.layout_text(width, &text_style, window) };
                 (content_height, f32::from(input.line_height))
             });
             let height =
                 content_height.clamp(min_rows as f32 * line_height, max_rows as f32 * line_height);
-            size(width, px(height))
+            size(width, if code { known.height.unwrap_or(px(height)) } else { px(height) })
         });
         (layout, ())
     }
@@ -1882,10 +1914,13 @@ impl gpui::Element for EditorTextElement {
         _: Option<&gpui::InspectorElementId>,
         bounds: Bounds<Pixels>,
         _: &mut (),
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut App,
     ) -> EditorPrepaint {
+        self.input.update(cx, |input, _| input.code_prepare(bounds.size.width, window));
+        let bounds = self.input.read(cx).code_text_bounds(bounds);
         self.input.update(cx, |input, _| {
+            input.code_apply_reveal();
             input.last_bounds = Some(bounds);
             input.clamp_scroll(f32::from(bounds.size.width), f32::from(bounds.size.height));
         });
@@ -1971,6 +2006,10 @@ impl gpui::Element for EditorTextElement {
                 input.update(cx, |input, cx| input.on_mouse_move(event, cx));
             }
         });
+        let full_bounds = bounds;
+        let bounds = self.input.read(cx).code_text_bounds(bounds);
+        let gutter = self.input.read(cx).code_gutter_rows(full_bounds);
+        paint_code_gutter(gutter, full_bounds, window, cx);
         window.with_content_mask(Some(gpui::ContentMask { bounds, ..Default::default() }), |window| {
             self.input.read(cx).paint_decoration_backgrounds(bounds, window);
             for quad in prepaint.selection.drain(..) {
@@ -1995,6 +2034,13 @@ impl gpui::Element for EditorTextElement {
             let mut y = bounds.top() - px(scroll_top);
             for line in &lines {
                 let height = line.size(line_height).height;
+                if y + height < bounds.top() {
+                    y += height;
+                    continue;
+                }
+                if y > bounds.bottom() {
+                    break;
+                }
                 line.paint(
                     point(bounds.left() - px(scroll_left), y),
                     line_height,
