@@ -243,6 +243,8 @@ fn selection_scroll_step(
 /// Queue a virtual-list scroll for the next render. `offset_in_item` may be
 /// negative: gpui then anchors the viewport top above the item, which is what
 /// keeps a row pixel-stable while unmeasured rows are spliced in above it.
+pub(crate) fn pending_scroll_ids() -> Vec<u64> { PENDING_VIRTUAL_LIST_SCROLLS.with(|cell| cell.borrow().keys().copied().collect()) }
+
 pub(crate) fn queue_virtual_list_scroll(id: u64, index: usize, offset_in_item: f32) {
     PENDING_VIRTUAL_LIST_SCROLLS.with(|cell| {
         cell.borrow_mut().insert(
@@ -376,7 +378,8 @@ fn update_window_without_view<R>(
 
 #[cfg(target_os = "macos")]
 fn invalidate_window() -> Result<()> {
-    update_window(|_view, window, cx| {
+    update_window(|view, window, cx| {
+        crate::cache_island::notify_pending_scrolls(view, cx);
         cx.notify();
         window.refresh();
     })
@@ -5387,7 +5390,7 @@ impl gpui::Render for GpuixView {
         // One-shot: a queued scroll for a list that did not build this frame
         // would otherwise fire on some later frame, against child indices that
         // no longer match what JS meant.
-        PENDING_VIRTUAL_LIST_SCROLLS.with(|cell| cell.borrow_mut().clear());
+        cx.defer(|_| PENDING_VIRTUAL_LIST_SCROLLS.with(|cell| cell.borrow_mut().clear()));
 
         if motion_active {
             window.request_animation_frame();
