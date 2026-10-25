@@ -2061,7 +2061,7 @@ impl GpuixRenderer {
     }
     #[napi]
     pub fn get_motion_capabilities(&self) -> serde_json::Value {
-        serde_json::json!({"rotate":true,"physicalSprings":true})
+        serde_json::json!({"rotate":true,"physicalSprings":true,"paintClip":true})
     }
     #[napi]
     pub fn set_subtree_translation(&self, element_id: u32, translation: serde_json::Value) -> Result<()> {
