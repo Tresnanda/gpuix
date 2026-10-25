@@ -64,6 +64,7 @@ pub struct EventPayload {
     /// Whether this is a key-repeat event (key held down).
     /// Populated for: keyDown.
     pub is_held: Option<bool>,
+    pub request_id: Option<u32>,
 
     /// Id of the GPUI key dispatch that produced this event. Every element
     /// `keyDown` and the trailing `windowKeyDown` of one keystroke share it, so
@@ -155,6 +156,7 @@ impl Default for EventPayload {
             key: None,
             key_char: None,
             is_held: None,
+            request_id: None,
             keystroke_id: None,
             delta_x: None,
             delta_y: None,

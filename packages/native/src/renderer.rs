@@ -51,7 +51,7 @@ fn with_window_menu_actions(root: gpui::Div) -> gpui::Div {
 
     root.on_action(|_: &MinimizeWindow, window, _cx| window.minimize_window())
         .on_action(|_: &ZoomWindow, window, _cx| window.zoom_window())
-        .on_action(|_: &CloseWindow, window, _cx| window.remove_window())
+        .on_action(|_: &CloseWindow, window, _cx| crate::close_guard::request(window))
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1863,6 +1863,30 @@ impl GpuixRenderer {
     }
 
     /// Run the native zoom or maximize operation.
+    #[napi]
+    pub fn resolve_key_event(&self, token: u32, prevented: bool) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        return update_window_without_view(move |window, cx| crate::key_intercept::resolve(token, prevented, window, cx));
+        #[cfg(not(target_os = "macos"))]
+        Err(Error::from_reason("Key interception is currently macOS-only"))
+    }
+
+    #[napi]
+    pub fn set_close_guard(&self, enabled: bool) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        return update_window(move |view, window, cx| crate::close_guard::install(if enabled { view.event_callback.clone() } else { None }, window, cx));
+        #[cfg(not(target_os = "macos"))]
+        Err(Error::from_reason("Close guards are currently macOS-only"))
+    }
+
+    #[napi]
+    pub fn resolve_close_request(&self, token: u32, allow: bool) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        return update_window_without_view(move |window, _cx| crate::close_guard::resolve(token, allow, window));
+        #[cfg(not(target_os = "macos"))]
+        Err(Error::from_reason("Close guards are currently macOS-only"))
+    }
+
     #[napi]
     pub fn zoom_window(&self) -> Result<()> {
         #[cfg(target_os = "macos")]
@@ -5209,6 +5233,7 @@ impl gpui::Render for GpuixView {
             let drag_end_view = drag_move_view.clone();
             let root = gpui::div().size_full();
             with_window_menu_actions(root)
+                .child(crate::key_intercept::listener(callback.clone()))
                 .child(window_key_events(
                     callback.clone(),
                     self.window_key_down,
@@ -5712,6 +5737,10 @@ pub(crate) fn build_host_container(
         if let Some(content) = joined_text_content(ctx.tree, element) {
             el = el.aria_value(content);
         }
+    }
+
+    if element.custom_props().get("windowDrag").and_then(|v| v.as_bool()) == Some(true) {
+        el = crate::window_drag::apply(el);
     }
 
     // Wire up events.
