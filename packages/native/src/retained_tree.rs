@@ -253,6 +253,9 @@ pub struct RetainedTree {
     /// Dim other focusables while a control has keyboard focus. Set per root.
     keyboard_focus_dim: bool,
     next_revision: u64,
+    pub(crate) paint_updates: HashSet<u64>,
+    pub(crate) full_redraw: bool,
+    pub(crate) paint_replay_enabled: bool,
     /// Something a frame would draw changed since the last `take_dirty`. A batch
     /// of resends, which is what a re-render with unchanged props produces,
     /// leaves it false, so the window is not asked to rebuild its element tree
@@ -271,6 +274,9 @@ impl RetainedTree {
             root_id: None,
             keyboard_focus_dim: true,
             next_revision: 1,
+            paint_updates: HashSet::new(),
+            full_redraw: true,
+            paint_replay_enabled: false,
             dirty: false,
         }
     }
@@ -343,7 +349,10 @@ impl RetainedTree {
         self.mark_changed_detail(id, false);
     }
 
+    pub(crate) fn mark_paint_fallback(&mut self, id: u64) { self.mark_render_changed(id); }
+
     fn mark_changed_detail(&mut self, id: u64, search: bool) {
+        self.full_redraw = true;
         let revision = self.take_revision();
         let mut current = Some(id);
         while let Some(current_id) = current {
@@ -452,6 +461,7 @@ impl RetainedTree {
     /// are two `Arc`s holding the same style. Only a pointer miss pays for the
     /// ~80-field compare, which is what decides whether this repaints.
     pub fn set_style(&mut self, id: u64, style: Arc<StyleDesc>) {
+        let paint_only = self.paint_replay_enabled && self.elements.get(&id).is_some_and(|element| crate::paint_replay::paint_only(element, &style));
         let mut changed = false;
         if let Some(element) = self.elements.get_mut(&id) {
             let same = element
@@ -464,7 +474,8 @@ impl RetainedTree {
             }
         }
         if changed {
-            self.mark_render_changed(id);
+            if paint_only { self.paint_updates.insert(id); self.dirty = true; }
+            else { self.mark_render_changed(id); }
         }
     }
 

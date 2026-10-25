@@ -16,6 +16,7 @@ mod accessibility;
 mod app_menu;
 mod automation;
 mod cache_island;
+mod paint_replay;
 mod backdrop;
 mod edge_fade;
 mod diff_style;

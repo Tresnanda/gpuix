@@ -1160,8 +1160,7 @@ impl GpuixRenderer {
         // window.refresh() (which disables every cache).
         #[cfg(target_os = "macos")]
         return update_window(|view, _window, cx| {
-            crate::cache_island::notify_changed_islands(view, cx);
-            cx.notify();
+            crate::paint_replay::invalidate(view, _window, cx);
         });
 
         #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
@@ -5520,6 +5519,7 @@ pub(crate) fn build_element(
 
     let built = if element.element_type == "anchored" { built } else { crate::backdrop::apply(built, element.custom_props().get("backdrop"), style.and_then(|s|s.opacity).unwrap_or(1.0) as f32) };
     let built = crate::edge_fade::apply(built, element.custom_props().get("edgeFade"));
+    let built = crate::paint_replay::apply(built, element, style);
     ctx.inherited = parent_inherited;
     let translated = ctx.motion_states.get(&id).and_then(|state| state.visible_style(ctx.now));
     if let Some(motion) = translated {
@@ -7315,6 +7315,7 @@ pub fn apply_batch_to_tree(tree: &mut RetainedTree, bytes: &[u8]) -> BatchResult
     // Phase 3: apply. Cannot fail.
     let mut destroyed_ids: Vec<f64> = Vec::new();
     for batch_op in parsed {
+        if !matches!(&batch_op, BatchOp::SetStyle { .. }) { tree.full_redraw = true; }
         match batch_op {
             BatchOp::CreateElement { id, element_type } => {
                 tree.create_element(id, element_type);
