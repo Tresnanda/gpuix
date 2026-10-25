@@ -165,3 +165,5 @@ mod tests {
         }
     }
 }
+
+mod large_alloc;

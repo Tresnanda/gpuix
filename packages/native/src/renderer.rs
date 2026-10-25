@@ -2207,6 +2207,7 @@ impl GpuixRenderer {
         return update_window_without_view(move |window, cx| Ok(serde_json::json!({
             "images":crate::custom_elements::img::image_memory_stats(cx),
             "editorImages":crate::rich_editor::image_memory_stats(),
+            "largeAllocations":crate::large_alloc::memory_stats(),
             "metalGauges":gpui::memory_debug_stats(),
             "elementArenaBytes":window.element_arena_memory_bytes(),
             "layoutNodeHighWater":window.layout_memory_peak_nodes(),
