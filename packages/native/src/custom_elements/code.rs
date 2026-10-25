@@ -57,6 +57,7 @@ pub struct CodeElement {
     language: Option<String>,
     path: Option<String>,
     show_line_numbers: bool,
+    soft_wrap: bool,
     theme: Theme,
     /// Cached highlight for the current `(code, language, path)`. The syntax
     /// cache already dedupes parsing, but this avoids hashing the source on
@@ -184,6 +185,7 @@ impl CustomElement for CodeElement {
             .line_height(px(type_style.line_height))
             .whitespace_nowrap();
 
+        content = crate::code_wrap::content(content, self.soft_wrap);
         for (line_ix, line) in lines.iter().enumerate() {
             let spans: Vec<(std::ops::Range<usize>, gpui::Hsla)> = highlight
                 .as_ref()
@@ -203,6 +205,7 @@ impl CustomElement for CodeElement {
                 .flex()
                 .flex_row();
 
+            row = crate::code_wrap::row(row, self.soft_wrap, type_style.line_height);
             if self.show_line_numbers {
                 row = row.child(
                     gpui::div()
@@ -221,7 +224,10 @@ impl CustomElement for CodeElement {
             // `sub` is the line index so each line owns a stable selection key
             // across frames. Using the element id alone would make every line
             // share one key and the wash would paint on all of them at once.
-            content = content.child(row.child(ctx.text(line_ix, line.to_string(), Some(runs))));
+            let text = ctx.text(line_ix, line.to_string(), Some(runs));
+            content = content.child(row.child(if self.soft_wrap {
+                gpui::div().flex_1().min_w_0().child(text).into_any_element()
+            } else { text.into_any_element() }));
         }
 
         // The scroller stays a child of the styled surface instead of being the
@@ -233,8 +239,7 @@ impl CustomElement for CodeElement {
             .id(SharedString::from(format!("__gpuix_code_body_{}", ctx.id)))
             .flex()
             .min_w_0()
-            .overflow_x_scroll()
-            .restrict_scroll_to_axis()
+            .when(!self.soft_wrap, |body| body.overflow_x_scroll().restrict_scroll_to_axis())
             .child(content);
 
         let block = super::custom_surface(
@@ -249,6 +254,7 @@ impl CustomElement for CodeElement {
             "code" => self.code = value.as_str().unwrap_or("").replace("\r\n", "\n"),
             "language" => self.language = value.as_str().map(str::to_string),
             "path" => self.path = value.as_str().map(str::to_string),
+            "softWrap" => self.soft_wrap = value.as_bool().unwrap_or(false),
             "showLineNumbers" => self.show_line_numbers = value.as_bool().unwrap_or(false),
             "theme" => self.theme = Theme::from_prop(Some(&value)),
             _ => {}
@@ -256,7 +262,7 @@ impl CustomElement for CodeElement {
     }
 
     fn supported_props(&self) -> &'static [&'static str] {
-        &["code", "language", "path", "showLineNumbers", "theme"]
+        &["code", "language", "path", "showLineNumbers", "softWrap", "theme"]
     }
 
     fn supported_events(&self) -> &'static [&'static str] {
