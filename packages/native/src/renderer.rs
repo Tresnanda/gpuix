@@ -1990,6 +1990,18 @@ impl GpuixRenderer {
         update_window_without_view(move |_, cx| crate::custom_elements::input::hit_test_input_decoration(id, x, y, cx))?
     }
     #[napi]
+    pub fn subscribe_animation_frames(&self, callback: ThreadsafeFunction<serde_json::Value>) -> Result<u32> {
+        update_window(move |view, window, _| crate::frame_clock::add(view.frame_clock.clone(), callback, window))?
+    }
+    #[napi]
+    pub fn acknowledge_animation_frame(&self, token: u32) -> Result<()> {
+        update_window(move |view, _, _| crate::frame_clock::ack(&view.frame_clock, token))
+    }
+    #[napi]
+    pub fn unsubscribe_animation_frames(&self, token: u32) -> Result<()> {
+        update_window(move |view, _, _| crate::frame_clock::remove(&view.frame_clock, token))
+    }
+    #[napi]
     pub fn zoom_window(&self) -> Result<()> {
         #[cfg(target_os = "macos")]
         return update_window(|_view, window, _cx| window.zoom_window());
@@ -3809,6 +3821,7 @@ pub(crate) struct GpuixView {
     /// Kybern patch: cached islands (`cache_island.rs`).
     pub(crate) islands: crate::cache_island::Islands,
     layout_observers: crate::layout_observer::Shared,
+    frame_clock: crate::frame_clock::Shared,
     syntax_documents: crate::syntax_document::Shared,
     /// Latest pointer sample and list during selection edge scrolling.
     selection_drag_position: Option<gpui::Point<gpui::Pixels>>,
@@ -4118,6 +4131,7 @@ impl GpuixView {
             virtual_lists: HashMap::new(),
             islands: Default::default(),
             layout_observers: Default::default(),
+            frame_clock: Default::default(),
             syntax_documents: Default::default(),
             selection_drag_position: None,
             selection_scroll_list: None,
@@ -7828,6 +7842,9 @@ fn to_gpui_window_options(
             appears_transparent: titlebar_transparent,
             traffic_light_position,
         }),
+        // Display-rate inactive motion parks when the window is occluded.
+        // Keep the previous cadence selectable for diagnostic comparisons.
+        inactive_frame_interval: if std::env::var("KYBERN_FULL_RATE").as_deref()==Ok("0") { Some(std::time::Duration::from_micros(33_333)) } else { None },
         is_resizable: options.resizable.unwrap_or(true),
         window_background,
         window_min_size,
