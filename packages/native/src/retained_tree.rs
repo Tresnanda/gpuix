@@ -266,6 +266,7 @@ pub struct RetainedTree {
 }
 
 impl RetainedTree {
+    pub(crate) fn kybern_motion_revision(&self) -> u64 { self.next_revision }
     pub fn new() -> Self {
         Self {
             elements: ElementMap::default(),

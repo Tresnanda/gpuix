@@ -3999,6 +3999,7 @@ pub(crate) struct GpuixView {
     /// Handles persist across renders so GPUI maintains scroll offset state.
     pub(crate) scroll_handles: HashMap<u64, gpui::ScrollHandle>,
     /// Native animation clocks keyed by retained element ID.
+    motion_sync: MotionFrameSync,
     pub(crate) motion_states: HashMap<u64, crate::motion::MotionState>,
     /// Live text selection, shared with the paint closures and the napi methods.
     pub(crate) selection: SharedSelection,
@@ -4076,6 +4077,8 @@ fn emit_motion_settled(
         });
     }
 }
+
+include!("motion_frame.rs");
 
 fn sync_motion_states(
     tree: &crate::retained_tree::RetainedTree,
@@ -4313,6 +4316,7 @@ impl GpuixView {
             focus_subscriptions: HashMap::new(),
             custom_registry: CustomElementRegistry::with_defaults(),
             scroll_handles: HashMap::new(),
+            motion_sync: Default::default(),
             motion_states: HashMap::new(),
             selection,
             virtual_lists: HashMap::new(),
@@ -4515,7 +4519,7 @@ impl GpuixView {
         let callback = self.event_callback.clone();
         let now = self.clock.now();
         let (motion_active, motion_settled) =
-            sync_motion_states(&tree, &mut self.motion_states, now);
+            sync_motion_frame(&tree, &mut self.motion_states, &mut self.motion_sync, window, now);
         let mut highlight_events = Vec::new();
 
         // Re-resolve against the tree as it is NOW. gpui calls this during
@@ -5513,7 +5517,7 @@ impl gpui::Render for GpuixView {
         let theme = Theme::dark();
         let now = self.clock.now();
         let (motion_active, motion_settled) =
-            sync_motion_states(&tree, &mut self.motion_states, now);
+            sync_motion_frame(&tree, &mut self.motion_states, &mut self.motion_sync, window, now);
         // Pruned by DECLARATION, not existence: an element that drops its
         // `highlight` prop keeps living, and its cached group list holds a copy
         // of every string in its subtree.
