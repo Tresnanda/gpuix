@@ -6034,6 +6034,9 @@ pub(crate) fn build_host_container(
 
     if let Some(style) = style {
         el = apply_interactive_styles(el, style);
+        if crate::hover_fade::fades(style) {
+            if let Some(transition) = crate::hover_fade::transition_for(element, ctx.tree) { el = el.color_transition(transition); }
+        }
 
         if crate::style::should_occlude(style) {
             // BlockMouse (occlude) stops the hit test, so the parent scroller
