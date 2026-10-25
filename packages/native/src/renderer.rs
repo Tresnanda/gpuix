@@ -5477,6 +5477,7 @@ impl gpui::Render for GpuixView {
         crate::subtree_translation::arm(self,window,cx);
         crate::subtree_transform::sync(&tree,self.clock.now());
         crate::subtree_transform::arm(self,window,cx);
+        crate::stroke_draw::arm(&self.clock);
         crate::file_drag::sweep(window,cx);
         // Build the element tree. custom_registry, focus_handles, and scroll_handles
         // are different fields of self, so Rust allows borrowing all simultaneously.
@@ -5709,6 +5710,7 @@ pub(crate) fn build_element(
     let built = if element.element_type == "anchored" { built } else { crate::backdrop::apply(built, element.custom_props().get("backdrop"), style.and_then(|s|s.opacity).unwrap_or(1.0) as f32, style) };
     let built = crate::edge_fade::apply(built, element.custom_props().get("edgeFade"));
     let built = crate::paint_replay::apply(built, element, style);
+    let built = crate::stroke_draw::apply(built, element);
     let built = if ctx.island_root != Some(id) {crate::subtree_translation::apply(built,id,ctx.tree,ctx.now)} else {built};
     let built = if ctx.island_root != Some(id) {crate::subtree_transform::apply(built,id,ctx.tree,ctx.now)} else {built};
     ctx.inherited = parent_inherited;
