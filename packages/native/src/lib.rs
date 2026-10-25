@@ -16,6 +16,8 @@ mod accessibility;
 mod app_menu;
 mod automation;
 mod cache_island;
+mod backdrop;
+mod edge_fade;
 mod diff_style;
 mod markdown_style;
 mod layout_observer;

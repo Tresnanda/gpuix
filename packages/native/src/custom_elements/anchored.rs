@@ -325,7 +325,7 @@ impl CustomElement for AnchoredElement {
             .style
             .and_then(crate::style::StyleDesc::resolved_background)
             .is_some();
-        if !declares_fill {
+        if !declares_fill && !ctx.props.contains_key("backdrop") {
             content = content.bg(gpui::rgb(0x1A1A1A));
         }
         if self.occlude {
@@ -353,7 +353,7 @@ impl CustomElement for AnchoredElement {
             }
         }
 
-        let anchored = anchored.child(content);
+        let anchored = anchored.child(crate::backdrop::apply(content.into_any_element(), ctx.props.get("backdrop"), ctx.style.and_then(|s|s.opacity).unwrap_or(1.0) as f32));
         let layer = if self.deferred {
             gpui::deferred(anchored)
                 .with_priority(self.priority)

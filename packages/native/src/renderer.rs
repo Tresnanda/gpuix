@@ -5518,6 +5518,8 @@ pub(crate) fn build_element(
         }
     };
 
+    let built = if element.element_type == "anchored" { built } else { crate::backdrop::apply(built, element.custom_props().get("backdrop"), style.and_then(|s|s.opacity).unwrap_or(1.0) as f32) };
+    let built = crate::edge_fade::apply(built, element.custom_props().get("edgeFade"));
     ctx.inherited = parent_inherited;
     let translated = ctx.motion_states.get(&id).and_then(|state| state.visible_style(ctx.now));
     if let Some(motion) = translated {
