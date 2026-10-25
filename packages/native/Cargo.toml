@@ -99,6 +99,8 @@ gpui_terminal = { path = "../gpui-terminal" }
 # awareness is set at runtime in renderer.rs instead of via windows-manifest.
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_HiDpi"] }
+# `getPlatformInfo` reads the window's own DPI from its HWND.
+raw-window-handle = "0.6"
 
 [features]
 # test-support is default so published binaries include TestGpuixRenderer,

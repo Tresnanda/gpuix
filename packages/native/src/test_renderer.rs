@@ -697,6 +697,38 @@ impl TestGpuixRenderer {
         })
     }
 
+    /// A wheel event with an explicit phase (`started`, `moved`, `ended`,
+    /// `cancelled`), as `GpuixRenderer::simulate_scroll_phase` sends it.
+    #[napi]
+    pub fn simulate_scroll_phase(
+        &self,
+        x: f64,
+        y: f64,
+        delta_x: f64,
+        delta_y: f64,
+        phase: String,
+        modifiers: Option<String>,
+    ) -> Result<()> {
+        let phase = crate::automation::parse_scroll_phase(&phase)
+            .ok_or_else(|| Error::from_reason("Unknown native scroll phase"))?;
+        let modifiers = crate::automation::parse_modifiers(modifiers.as_deref());
+        with_test_state(|cx, window, _view| {
+            cx.simulate_event(
+                window,
+                gpui::ScrollWheelEvent {
+                    position: gpui::point(gpui::px(x as f32), gpui::px(y as f32)),
+                    delta: gpui::ScrollDelta::Pixels(gpui::point(
+                        gpui::px(delta_x as f32),
+                        gpui::px(delta_y as f32),
+                    )),
+                    modifiers,
+                    touch_phase: phase,
+                },
+            );
+            Ok(())
+        })
+    }
+
     /// Simulate a Finder-style file drop at the given window coordinates.
     /// Dispatches FileDrop Entered then Submit, matching GPUI's OS drop path.
     #[napi]

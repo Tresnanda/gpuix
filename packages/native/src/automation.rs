@@ -427,6 +427,18 @@ pub fn dispatch_mouse_move(
     );
 }
 
+/// A scroll phase name from automation (`simulateScrollPhase`), shared by the
+/// app renderer and the headless test renderer.
+pub fn parse_scroll_phase(phase: &str) -> Option<gpui::TouchPhase> {
+    match phase {
+        "started" => Some(gpui::TouchPhase::Started),
+        "moved" => Some(gpui::TouchPhase::Moved),
+        "ended" => Some(gpui::TouchPhase::Ended),
+        "cancelled" => Some(gpui::TouchPhase::Cancelled),
+        _ => None,
+    }
+}
+
 pub fn dispatch_scroll_wheel(
     window: &mut Window,
     cx: &mut App,

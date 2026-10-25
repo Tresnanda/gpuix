@@ -2642,6 +2642,7 @@ dependencies = [
  "parking_lot",
  "percent-encoding",
  "pulldown-cmark",
+ "raw-window-handle",
  "reqwest_client",
  "rmp-serde",
  "rustc-hash 2.1.1",
