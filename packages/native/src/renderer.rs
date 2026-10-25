@@ -5564,7 +5564,7 @@ impl gpui::Render for GpuixView {
                         });
                     },
                 ))
-                .child(crate::layout_observer::after_paint(self.layout_observers.clone(), self.tree.clone()))
+                .child(crate::layout_observer::after_paint(self.layout_observers.clone(), self.tree.clone(), self.observed_scrolls()))
                 .child(crate::automation::bounds_frame_reset())
                 .child(result)
                 .into_any_element()
@@ -5843,7 +5843,6 @@ fn build_virtual_list(
     // the captured value must survive every call.
     let inherited = ctx.inherited.clone();
     let cache_layout = element.custom_props().get("cacheLayout").and_then(|v|v.as_bool()).unwrap_or(false);
-    let layout_revision = element.subtree_revision;
     let render_item = cx.processor(move |view, index: usize, window, cx| {
         let Some(entry) = view.virtual_lists.get(&list_id) else {
             return unmounted_virtual_row(1.0);
@@ -5852,6 +5851,7 @@ fn build_virtual_list(
             // Empty measures as 0 and poisons ListState. Keep the estimate.
             return unmounted_virtual_row(entry.config.estimated_item_height.unwrap_or(1.0));
         };
+        let layout_revision = entry.child_revisions.get(index.saturating_sub(entry.window_start)).copied().unwrap_or(0);
         let row = view.build_virtual_child(list_id, index, child_id, inherited.clone(), window, cx);
         if cache_layout { crate::scroll_layout::apply(row, [list_id, child_id, layout_revision]) } else { row }
     });
@@ -8716,4 +8716,10 @@ fn check_font(bytes: &[u8]) -> std::result::Result<(), String> {
         return Err("font has no glyph for \"m\"".to_string());
     }
     Ok(())
+}
+
+impl GpuixView {
+    pub(crate) fn observed_scrolls(&self) -> std::collections::HashMap<u64, gpui::ListState> {
+        self.virtual_lists.iter().map(|(id, entry)| (*id, entry.state.clone())).collect()
+    }
 }

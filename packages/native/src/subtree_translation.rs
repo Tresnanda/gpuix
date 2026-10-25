@@ -189,7 +189,7 @@ pub(crate) fn tick(view: &mut GpuixView, window: &mut Window, cx: &mut gpui::Con
     if painted {
         let deltas = crate::automation::translate_subtree_bounds(&updates, window.viewport_size());
         view.custom_registry.translate_subtrees(&deltas, cx);
-        crate::layout_observer::notify(&view.layout_observers, &view.tree, window.viewport_size(), window.scale_factor());
+        crate::layout_observer::notify(&view.layout_observers, &view.tree, window.viewport_size(), window.scale_factor(), &view.observed_scrolls());
         for (id, generation) in settled {
             if !view.tree.lock().unwrap().elements.get(&id).is_some_and(|e| e.events().contains("motionComplete")) {
                 continue;
