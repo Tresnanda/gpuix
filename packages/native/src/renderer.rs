@@ -1160,7 +1160,7 @@ impl GpuixRenderer {
         // window.refresh() (which disables every cache).
         #[cfg(target_os = "macos")]
         return update_window(|view, _window, cx| {
-            if !crate::subtree_translation::invalidate(view, _window, cx) { crate::paint_replay::invalidate(view, _window, cx); }
+            if !crate::subtree_transform::invalidate(view, _window, cx) && !crate::subtree_translation::invalidate(view, _window, cx) { crate::paint_replay::invalidate(view, _window, cx); }
         });
 
         #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
@@ -5475,6 +5475,8 @@ impl gpui::Render for GpuixView {
         }
         crate::subtree_translation::sync(&tree,self.clock.now());
         crate::subtree_translation::arm(self,window,cx);
+        crate::subtree_transform::sync(&tree,self.clock.now());
+        crate::subtree_transform::arm(self,window,cx);
         // Build the element tree. custom_registry, focus_handles, and scroll_handles
         // are different fields of self, so Rust allows borrowing all simultaneously.
         let theme = Theme::dark();
@@ -5615,7 +5617,7 @@ pub(crate) fn build_element(
     // Kybern patch: cached islands (`cache_island.rs`).
     if crate::cache_island::is_island(element) {
         if let Some(island) = crate::cache_island::island_element(id, element, ctx, window, cx) {
-            return crate::subtree_translation::apply(island,id,ctx.tree,ctx.now);
+            return crate::subtree_transform::apply(crate::subtree_translation::apply(island,id,ctx.tree,ctx.now),id,ctx.tree,ctx.now);
         }
     }
 
@@ -5707,6 +5709,7 @@ pub(crate) fn build_element(
     let built = crate::edge_fade::apply(built, element.custom_props().get("edgeFade"));
     let built = crate::paint_replay::apply(built, element, style);
     let built = if ctx.island_root != Some(id) {crate::subtree_translation::apply(built,id,ctx.tree,ctx.now)} else {built};
+    let built = if ctx.island_root != Some(id) {crate::subtree_transform::apply(built,id,ctx.tree,ctx.now)} else {built};
     ctx.inherited = parent_inherited;
     let translated = ctx.motion_states.get(&id).and_then(|state| state.visible_style(ctx.now));
     if let Some(motion) = translated {
@@ -7513,7 +7516,7 @@ pub fn apply_batch_to_tree(tree: &mut RetainedTree, bytes: &[u8]) -> BatchResult
     // Phase 3: apply. Cannot fail.
     let mut destroyed_ids: Vec<f64> = Vec::new();
     for batch_op in parsed {
-        if !matches!(&batch_op, BatchOp::SetStyle { .. }) && !matches!(&batch_op, BatchOp::SetCustomProp {key,..} if key == "paintTranslate") { tree.full_redraw = true; }
+        if !matches!(&batch_op, BatchOp::SetStyle { .. }) && !matches!(&batch_op, BatchOp::SetCustomProp {key,..} if key == "paintTranslate") && !matches!(&batch_op, BatchOp::SetCustomProp {key,..} if key == "paintTransform") { tree.full_redraw = true; }
         match batch_op {
             BatchOp::CreateElement { id, element_type } => {
                 tree.create_element(id, element_type);

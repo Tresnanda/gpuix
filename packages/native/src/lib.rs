@@ -24,6 +24,7 @@ mod clipboard;
 mod frame_clock;
 mod paint_replay;
 mod subtree_translation;
+mod subtree_transform;
 mod backdrop;
 mod edge_fade;
 mod diff_style;
