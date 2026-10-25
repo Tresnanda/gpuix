@@ -17,6 +17,7 @@ mod app_menu;
 mod automation;
 mod automation_display;
 mod cache_island;
+mod idle_memory;
 mod stroke_draw;
 mod rich_doc;
 mod rich_editor;

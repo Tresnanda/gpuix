@@ -1551,6 +1551,7 @@ impl GpuixRenderer {
 
         #[cfg(target_os = "macos")]
         {
+            crate::idle_memory::tick_pool();
             let running = EMBEDDED_PLATFORM.with(|p| {
                 p.borrow()
                     .as_ref()
@@ -2217,6 +2218,7 @@ impl GpuixRenderer {
             "editorImages":crate::rich_editor::image_memory_stats(),
             "largeAllocations":crate::large_alloc::memory_stats(),
             "smallAllocator":crate::large_alloc::code_small_stats(),
+            "tickPool":crate::idle_memory::tick_pool_stats(),
             "syntaxCache": ({
                 let cache = crate::syntax::cache::stats();
                 serde_json::json!({"documents":cache.documents,"retainedBytes":cache.retained_bytes,"hits":cache.hits,"misses":cache.misses})
@@ -2233,6 +2235,23 @@ impl GpuixRenderer {
         Err(Error::from_reason("Memory counters are currently macOS-only"))
     }
 
+    #[napi]
+    pub fn set_window_state_callback(&self, callback: Option<ThreadsafeFunction<serde_json::Value>>) {
+        crate::idle_memory::set_window_state_callback(callback);
+    }
+    #[napi]
+    pub fn acknowledge_window_state(&self) { crate::idle_memory::acknowledge_window_state(); }
+    /// Release what this window's next frame can rebuild (path target, cached
+    /// instance buffers, backdrop scratch, passive region target; with
+    /// `{ queue: true }` also the command queue) and collect the private
+    /// small-allocation heap at the next frame boundary.
+    #[napi]
+    pub fn release_idle_memory(&self, options: Option<serde_json::Value>) -> Result<serde_json::Value> {
+        let recreate_queue = options.as_ref().and_then(|o| o.get("queue")).and_then(serde_json::Value::as_bool).unwrap_or(false);
+        let gpu_bytes = update_window(move |_, window, _| window.release_idle_gpu_memory(recreate_queue))?;
+        crate::large_alloc::code_small_request();
+        Ok(serde_json::json!({ "gpuBytes": gpu_bytes }))
+    }
     #[napi]
     pub fn zoom_window(&self) -> Result<()> {
         #[cfg(target_os = "macos")]
