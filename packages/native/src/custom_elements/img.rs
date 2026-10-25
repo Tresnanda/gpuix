@@ -88,12 +88,15 @@ pub struct ImgElement {
     alt: String,
     dropped: Option<std::sync::Arc<gpui::RenderImage>>,
     image_lease: Option<String>,
+    /// `load` was sent for the current source.
+    load_reported: bool,
 }
 
 impl ImgElement {
     fn load_src(&mut self, src: &str) {
         let src = src.trim();
         if self.image_lease.as_deref() == Some(src) { return; }
+        self.load_reported = false;
         if let Some(old) = self.image_lease.take() { release_image(&old); }
         self.image_lease = Some(src.to_owned());
         self.source = lease_image(src, || if src.is_empty() {
@@ -235,6 +238,14 @@ impl CustomElement for ImgElement {
             }
         }
 
+        if ctx.events.contains("load") && !self.load_reported {
+            if let Some(loaded) = image_source(&self.source).and_then(|source| source.kybern_loaded(window, _cx)) {
+                self.load_reported = true;
+                let (callback, id) = (ctx.event_callback.clone(), ctx.id);
+                // After this frame: the handler may set state, which must not re-enter this build.
+                window.on_next_frame(move |_, _| crate::renderer::emit_event_full(&callback, id, "load", |payload| payload.value = Some(if loaded { "loaded" } else { "failed" }.into())));
+            }
+        }
         let mut el =
             crate::accessibility::apply_accessibility(el, ctx.props, Some(gpui::Role::Image));
         el = crate::accessibility::apply_image_label(el, ctx.props, &self.alt);
@@ -269,7 +280,7 @@ impl CustomElement for ImgElement {
     }
 
     fn supported_events(&self) -> &'static [&'static str] {
-        &["click", "mouseEnter", "mouseLeave", "fileDrop"]
+        &["click", "mouseEnter", "mouseLeave", "fileDrop", "load"]
     }
 
     fn destroy(&mut self) {}
