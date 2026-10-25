@@ -14,6 +14,7 @@ struct InlineToken {
 struct InlineData {
     flat: FlatText,
     tokens: Vec<InlineToken>,
+    run_offsets: Vec<usize>,
     font_sans: String,
     size: f32,
     line: f32,
@@ -26,20 +27,14 @@ struct InlineData {
     element_id: u64,
     base: usize,
     group: u64,
-    selection: SharedSelection,
-    selectable: bool,
-    selection_wash: Hsla,
-    hover_link_color: Option<Hsla>,
-    on_link: Option<Arc<dyn Fn(&str)>>,
-    highlight: Option<Arc<crate::text::HighlightContext>>,
     icons: Vec<(usize, Arc<gpui::RenderImage>)>,
-    caret: Option<Hsla>,
 }
 impl InlineData {
     fn runs(&self, range: &Range<usize>) -> Vec<TextRun> {
         let mut out = Vec::new();
-        let mut offset = 0;
-        for run in &self.flat.runs {
+        let first=self.run_offsets.partition_point(|end|*end<=range.start);
+        let mut offset=if first==0 {0}else{self.run_offsets[first-1]};
+        for run in self.flat.runs.iter().skip(first) {
             let a = range.start.max(offset);
             let b = range.end.min(offset + run.len);
             if a < b {
@@ -138,8 +133,19 @@ struct InlineLayout {
     height: f32,
     positions: Vec<InlinePosition>,
 }
+struct InlineInteraction {
+    selection: SharedSelection,
+    selectable: bool,
+    selection_wash: Hsla,
+    hover_link_color: Option<Hsla>,
+    on_link: Option<Arc<dyn Fn(&str)>>,
+    highlight: Option<Arc<crate::text::HighlightContext>>,
+    caret: Option<Hsla>,
+}
 struct InlineFlow {
     data: Rc<InlineData>,
+    layout: Rc<RefCell<Option<InlineLayout>>>,
+    interaction: InlineInteraction,
 }
 impl IntoElement for InlineFlow {
     type Element = Self;
@@ -164,7 +170,7 @@ impl Element for InlineFlow {
         _: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let data = self.data.clone();
-        let state = Rc::new(RefCell::new(None));
+        let state = self.layout.clone();
         let output = state.clone();
         let mut style = gpui::Style::default();
         style.size.width = gpui::relative(1.0).into();
@@ -174,9 +180,9 @@ impl Element for InlineFlow {
                 _ => px(320.0),
             }))
             .max(1.0);
-            let layout = data.layout(width, window);
-            let height = layout.height;
-            *output.borrow_mut() = Some(layout);
+            let mut cache=output.borrow_mut();
+            if cache.as_ref().is_none_or(|layout|layout.width!=width) { *cache=Some(data.layout(width,window)); }
+            let height=cache.as_ref().unwrap().height;
             gpui::size(px(width), px(height))
         });
         (layout, state)
@@ -192,6 +198,7 @@ impl Element for InlineFlow {
     ) -> Vec<AnyElement> {
         use gpui::prelude::*;
         let data = &self.data;
+        let interaction = &self.interaction;
         let width = f32::from(bounds.size.width);
         let mut layout = state.borrow_mut();
         if layout.as_ref().is_none_or(|l| (l.width - width).abs() > 0.1) {
@@ -202,7 +209,11 @@ impl Element for InlineFlow {
         let washes = Rc::new(RefCell::new(None));
         let search_key = crate::text::selection_key(data.element_id, data.base);
         let mut children = Vec::new();
-        for position in &layout.positions {
+        let top=f32::from(clip.top()-bounds.top())-data.line;
+        let bottom=f32::from(clip.bottom()-bounds.top())+data.line;
+        let start=layout.positions.partition_point(|p|p.y+p.height<top);
+        let end=layout.positions.partition_point(|p|p.y<=bottom);
+        for position in &layout.positions[start..end] {
             let token = &data.tokens[position.index];
             let origin = bounds.origin + gpui::point(px(position.x), px(position.y));
             let piece = Bounds { origin, size: gpui::size(px(position.width), px(position.height)) };
@@ -217,7 +228,7 @@ impl Element for InlineFlow {
             let inset = data.inset;
             let is_code = token.code;
             let icon_here: Vec<(usize, Arc<gpui::RenderImage>)> = data.icons.iter().filter(|(at, _)| *at == range.start).map(|(_, image)| (0, image.clone())).collect();
-            let caret_here = if position.index + 1 == data.tokens.len() { data.caret } else { None };
+            let caret_here = if position.index + 1 == data.tokens.len() { interaction.caret } else { None };
             let size_here = data.size;
             let fades_here: Vec<(Range<usize>, f64, f32)> = data.flat.fades.iter().filter_map(|(r, born, ms)| {
                 let a = range.start.max(r.start);
@@ -240,7 +251,7 @@ impl Element for InlineFlow {
             let links = data
                 .flat
                 .links
-                .iter()
+                .iter().skip(data.flat.links.partition_point(|(range,_)|range.end<=token.range.start)).take_while(|(range,_)|range.start<token.range.end)
                 .filter_map(|(r, url)| {
                     let a = range.start.max(r.start);
                     let b = range.end.min(r.end);
@@ -248,13 +259,13 @@ impl Element for InlineFlow {
                 })
                 .collect();
             let text = crate::text::selectable_text(crate::text::SelectableText {
-                selectable: data.selectable,
+                selectable: interaction.selectable,
                 group: Some(data.group),
                 links,
-                hover_link_color: data.hover_link_color,
-                on_link: data.on_link.clone(),
+                hover_link_color: interaction.hover_link_color,
+                on_link: interaction.on_link.clone(),
                 extra_wash,
-                highlight: data.highlight.clone().map(|context| crate::text::HighlightSource::NativeFragment {
+                highlight: interaction.highlight.clone().map(|context| crate::text::HighlightSource::NativeFragment {
                     context,
                     key: search_key.clone(),
                     text: data.flat.text.clone(),
@@ -266,8 +277,8 @@ impl Element for InlineFlow {
                     data.base + 1 + range.start,
                     data.flat.text[range.clone()].to_string().into(),
                     Some(data.runs(range)),
-                    data.selection.clone(),
-                    data.selection_wash,
+                    interaction.selection.clone(),
+                    interaction.selection_wash,
                 )
             });
             let mut child = div()
@@ -313,11 +324,24 @@ fn inline_element(flat: &FlatText, size: f32, line: f32, align: Option<TableAlig
     let ratio = number(style.inline_code_size_ratio, 1.0).max(0.01);
     // Preserve GPUI's whole-paragraph bidirectional shaping until inline flow
     // has a bidi-aware visual-order map; never reverse RTL text word-by-word.
-    let bidi =
-        flat.text.chars().any(|c| matches!(c as u32,0x0590..=0x08ff|0xfb1d..=0xfdff|0xfe70..=0xfefc|0x202a..=0x202e|0x2066..=0x2069));
+    let check=||flat.text.chars().any(|c| matches!(c as u32,0x0590..=0x08ff|0xfb1d..=0xfdff|0xfe70..=0xfefc|0x202a..=0x202e|0x2066..=0x2069));
+    let bidi=if let Some(cache)=&ctx.viewport {*crate::markdown_view::cached(cache,ctx.next_sub,check)}else{check()};
     if bidi || flat.code_ranges.is_empty() || (padding == 0.0 && ratio == 1.0) {
         return flat_text_element(flat, size, ctx);
     }
+    let base=ctx.next_sub;
+    ctx.next_sub+=flat.text.len()+2;
+    let viewport=ctx.viewport.clone();
+    let interaction=InlineInteraction {
+            selection: ctx.selection.clone(),
+            selectable: ctx.selectable,
+            selection_wash: ctx.selection_wash,
+            hover_link_color: (ctx.theme.markdown.link.underline.as_deref() == Some("hover")).then(||color(&ctx.theme.markdown.link.color, ctx.theme.text)),
+            on_link: ctx.on_link.clone(),
+            highlight: ctx.highlight_set.clone(),
+            caret: ctx.caret.take(),
+    }; 
+    let create=|| {
     let mut tokens = Vec::new();
     let mut start = 0;
     while start < flat.text.len() {
@@ -331,10 +355,9 @@ fn inline_element(flat: &FlatText, size: f32, line: f32, align: Option<TableAlig
         tokens.push(InlineToken { range: start..end, code: code.is_some() });
         start = end;
     }
-    let base = ctx.next_sub;
-    ctx.next_sub += flat.text.len() + 2;
-    InlineFlow {
-        data: Rc::new(InlineData {
+
+        for token in &tokens { if let Some(cache)=&ctx.viewport {crate::markdown_view::record(cache,ctx.element_id,base+1+token.range.start,flat.text.clone(),token.range.clone(),Some(ctx.element_id.rotate_left(32)^base as u64));} }
+        InlineData {
             flat: FlatText {
                 text: flat.text.clone(),
                 runs: flat.runs.clone(),
@@ -344,6 +367,7 @@ fn inline_element(flat: &FlatText, size: f32, line: f32, align: Option<TableAlig
                 fades: flat.fades.clone(),
             },
             tokens,
+            run_offsets: {let mut end=0;flat.runs.iter().map(|run|{end+=run.len;end}).collect()},
             font_sans: ctx.theme.font_sans.clone(),
             size,
             line,
@@ -356,15 +380,11 @@ fn inline_element(flat: &FlatText, size: f32, line: f32, align: Option<TableAlig
             element_id: ctx.element_id,
             base,
             group: ctx.element_id.rotate_left(32) ^ base as u64,
-            selection: ctx.selection.clone(),
-            selectable: ctx.selectable,
-            selection_wash: ctx.selection_wash,
-            hover_link_color: (ctx.theme.markdown.link.underline.as_deref() == Some("hover")).then(||color(&ctx.theme.markdown.link.color, ctx.theme.text)),
-            on_link: ctx.on_link.clone(),
-            highlight: ctx.highlight_set.clone(),
             icons: flat.icons.clone(),
-            caret: ctx.caret.take(),
-        }),
-    }
-    .into_any_element()
+
+        }
+    };
+    let data=if let Some(cache)=&viewport {crate::markdown_view::cached(cache,base,create)}else{Rc::new(create())};
+    let layout=if let Some(cache)=&viewport {crate::markdown_view::cached(cache,base,||RefCell::new(None))}else{Rc::new(RefCell::new(None))};
+    InlineFlow {data,layout,interaction}.into_any_element()
 }

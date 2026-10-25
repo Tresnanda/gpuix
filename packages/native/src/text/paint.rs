@@ -216,9 +216,12 @@ pub struct SelectableText {
     /// Paints additional quads under the glyphs before the selection wash:
     /// inline-code pills, word-diff highlights. Receives the laid-out text so
     /// it can turn byte ranges into rects with [`range_rects`].
+    pub retained_layout: Option<TextLayout>,
+    pub run_provider: Option<std::rc::Rc<dyn Fn()->Vec<TextRun>>>,
     pub extra_wash: Option<Box<dyn Fn(&TextLayout, &mut Window)>>,
     /// Clickable byte ranges and their payloads, typically link URLs.
     pub hover_link_color: Option<Hsla>,
+    pub shared_links: Option<Arc<Vec<(Range<usize>, String)>>>,
     pub links: Vec<(Range<usize>, String)>,
     /// Called with the payload of the range under a click.
     pub on_link: Option<Arc<dyn Fn(&str)>>,
@@ -247,8 +250,11 @@ impl SelectableText {
             runs,
             selection,
             wash_color,
+            retained_layout: None,
+            run_provider: None,
             extra_wash: None,
             hover_link_color: None,
+            shared_links: None,
             links: Vec::new(),
             on_link: None,
             selectable: true,
@@ -269,19 +275,25 @@ pub fn selectable_text(opts: SelectableText) -> gpui::AnyElement {
         selection,
         wash_color,
         extra_wash,
+        retained_layout,
+        run_provider,
         links,
+        shared_links,
         hover_link_color,
         on_link,
         selectable,
         group,
         highlight,
     } = opts;
+    let links=shared_links.unwrap_or_else(||Arc::new(links));
     let key = selection_key(element_id, sub);
 
     let styled = match runs {
         Some(runs) => StyledText::new(text.clone()).with_runs(runs),
         None => StyledText::new(text.clone()),
     };
+    let styled=if let Some(provider)=run_provider {styled.with_runs_provider(provider)}else{styled};
+    let styled=if let Some(layout)=retained_layout {styled.with_layout(layout)}else{styled};
     let layout = styled.layout().clone();
 
     let underlay = canvas(
@@ -543,6 +555,7 @@ fn registry_point_on_line(position: gpui::Point<gpui::Pixels>) -> Option<(usize,
 fn resolve_drag(selection: &SharedSelection, head: (usize, usize)) -> bool {
     REGISTRY.with(|r| {
         let reg = r.borrow();
+        if let Some(result)=crate::markdown_view::resolve_drag(selection,reg[head.0].key.as_ref(),head.1) {return result;}
         let elements: Vec<selection::RegisteredText> = reg
             .iter()
             .map(|e| selection::RegisteredText {

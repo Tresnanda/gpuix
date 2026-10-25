@@ -2162,6 +2162,32 @@ impl GpuixRenderer {
     }
 
     #[napi]
+    pub fn create_markdown_document(&self, options: serde_json::Value) -> Result<napi::bindgen_prelude::AsyncTask<crate::markdown_document::ParseTask>> {
+        let registry = update_window(|view, _, _| view.markdown_documents.clone())?;
+        Ok(napi::bindgen_prelude::AsyncTask::new(crate::markdown_document::Registry::prepare(registry, None, options)?))
+    }
+    #[napi]
+    pub fn update_markdown_document(&self, id: String, options: serde_json::Value) -> Result<napi::bindgen_prelude::AsyncTask<crate::markdown_document::ParseTask>> {
+        let registry = update_window(|view, _, _| view.markdown_documents.clone())?;
+        Ok(napi::bindgen_prelude::AsyncTask::new(crate::markdown_document::Registry::prepare(registry, Some(id), options)?))
+    }
+    #[napi]
+    pub fn release_markdown_document(&self, id: String) -> Result<()> {
+        update_window(move |view, _, _| view.markdown_documents.lock().unwrap().release(&id))
+    }
+    #[napi]
+    pub fn get_markdown_document_text(&self, id: String, revision: u32) -> Result<String> {
+        update_window(move |view, _, _| view.markdown_documents.lock().unwrap().source(&id, revision))?
+    }
+    #[napi]
+    pub fn get_markdown_document_layout(&self, id: String, revision: u32) -> Result<serde_json::Value> {
+        update_window(move |view, _, _| view.markdown_documents.lock().unwrap().layout(&id, revision))?
+    }
+    #[napi]
+    pub fn get_markdown_document_stats(&self) -> Result<serde_json::Value> {
+        update_window(|view, _, _| view.markdown_documents.lock().unwrap().stats())
+    }
+    #[napi]
     pub fn zoom_window(&self) -> Result<()> {
         #[cfg(target_os = "macos")]
         return update_window(|_view, window, _cx| window.zoom_window());
@@ -3983,6 +4009,7 @@ pub(crate) struct GpuixView {
     pub(crate) layout_observers: crate::layout_observer::Shared,
     frame_clock: crate::frame_clock::Shared,
     syntax_documents: crate::syntax_document::Shared,
+    markdown_documents: crate::markdown_document::Shared,
     /// Latest pointer sample and list during selection edge scrolling.
     selection_drag_position: Option<gpui::Point<gpui::Pixels>>,
     selection_scroll_list: Option<u64>,
@@ -4293,6 +4320,7 @@ impl GpuixView {
             layout_observers: Default::default(),
             frame_clock: Default::default(),
             syntax_documents: Default::default(),
+            markdown_documents: Default::default(),
             selection_drag_position: None,
             selection_scroll_list: None,
             selection_scroll_task: None,
@@ -5405,6 +5433,7 @@ impl PendingFocus {
 impl Drop for GpuixView {
     fn drop(&mut self) {
         self.syntax_documents.lock().unwrap().close();
+        self.markdown_documents.lock().unwrap().close();
         self.layout_observers.borrow_mut().close();
     }
 }
@@ -5417,6 +5446,7 @@ impl gpui::Render for GpuixView {
         use gpui::IntoElement;
 
         crate::syntax_document::activate(&self.syntax_documents);
+        crate::markdown_document::activate(&self.markdown_documents);
         window.set_window_title(&self.window_title);
         let scroll_targets: Vec<u64> = self.tree.lock().unwrap().elements.iter()
             .filter_map(|(id,element)| if element.element_type != "virtual-list" && element.element_type != "diff" {None} else {element.custom_props().get("cacheLayout").and_then(|v|v.as_bool()).unwrap_or(false).then_some(*id)}).collect();

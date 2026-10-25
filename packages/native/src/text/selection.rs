@@ -123,6 +123,8 @@ impl SelectionState {
         }];
     }
 
+    pub(crate) fn document_anchor(&self) -> Option<&str> {self.is_dragging().then_some(self.anchor_key.as_str())}
+
     pub fn is_dragging(&self) -> bool {
         self.active && self.dragging
     }

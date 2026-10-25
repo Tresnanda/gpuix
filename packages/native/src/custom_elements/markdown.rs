@@ -40,6 +40,12 @@ pub struct MarkdownElement {
     tree: Option<Rc<BlockTree>>,
     parsed_len: Option<usize>,
     parsed_hash: Option<u64>,
+    document: Option<String>,
+    revision: u32,
+    start_block: usize,
+    end_block: Option<usize>,
+    document_lease: Option<Arc<crate::markdown_document::Document>>,
+    viewport: crate::markdown_view::Cache,
 }
 
 impl MarkdownElement {
@@ -73,7 +79,14 @@ impl CustomElement for MarkdownElement {
         crate::kybern_icon::set_renderer(cx.svg_renderer());
 
         let theme = self.theme.clone();
-        let tree = self.tree();
+        if let Some(id) = &self.document {
+            if self.document_lease.as_ref().map(|d| d.revision) != Some(self.revision) {
+                self.document_lease = crate::markdown_document::lookup(id, self.revision);
+                if let Some(doc)=&self.document_lease {crate::markdown::render::invalidate_document(&self.viewport,doc,self.start_block,self.end_block);}else{self.viewport.borrow_mut().clear();}
+            }
+        } else { self.document_lease = None; }
+        let document = self.document_lease.clone();
+        let tree = if document.is_none() { Some(self.tree()) } else { None };
 
         // Link clicks are hit-tested per byte range inside the painted text, so
         // clicking prose emits nothing and clicking the second link emits the
@@ -100,7 +113,10 @@ impl CustomElement for MarkdownElement {
             on_link,
             ctx.highlight_set.clone(),
         );
-        let body = render_tree(&tree, &mut md, window);
+        let body = if let Some(document) = document {
+            md.viewport = Some(self.viewport.clone());
+            crate::markdown::render::render_document(document, &mut md, window,self.start_block,self.end_block)
+        } else { render_tree(tree.as_ref().unwrap(), &mut md, window) };
 
         let container = gpui::div()
             .id(SharedString::from(format!("__gpuix_markdown_{}", ctx.id)))
@@ -121,13 +137,17 @@ impl CustomElement for MarkdownElement {
     fn set_prop(&mut self, key: &str, value: serde_json::Value) {
         match key {
             "source" => self.source = value.as_str().unwrap_or("").to_string(),
-            "theme" => self.theme = Theme::from_prop(Some(&value)),
+            "document" => { self.document = value.as_str().map(str::to_owned); self.document_lease = None; },
+            "startBlock" => {self.start_block=value.as_u64().unwrap_or(0) as usize;self.viewport.borrow_mut().clear();},
+            "endBlock" => {self.end_block=value.as_u64().map(|n|n as usize);self.viewport.borrow_mut().clear();},
+            "revision" => self.revision = value.as_u64().unwrap_or(0) as u32,
+            "theme" => { self.theme = Theme::from_prop(Some(&value)); self.viewport.borrow_mut().clear(); },
             _ => {}
         }
     }
 
     fn supported_props(&self) -> &'static [&'static str] {
-        &["source", "theme"]
+        &["source", "theme", "document", "revision", "startBlock", "endBlock"]
     }
 
     fn supported_events(&self) -> &'static [&'static str] {
@@ -136,5 +156,7 @@ impl CustomElement for MarkdownElement {
 
     fn destroy(&mut self) {
         self.tree = None;
+        self.document_lease = None;
+        self.viewport.borrow_mut().clear();
     }
 }

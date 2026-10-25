@@ -88,8 +88,17 @@ fn options() -> Options {
 }
 
 /// Parse a whole source into a [`BlockTree`].
-pub fn parse(source: &str) -> BlockTree {
-    let events: Vec<(Event, Range<usize>)> = Parser::new_ext(source, options())
+pub fn parse(source: &str) -> BlockTree { parse_document(source).0 }
+
+pub fn parse_document(source: &str) -> (BlockTree, Vec<Range<usize>>) { let (tree,ranges,_)=parse_document_defs(source);(tree,ranges) }
+
+#[derive(Clone, Debug)]
+pub struct ReferenceDefinition {pub label:String,pub url:String,pub title:Option<String>,pub range:Range<usize>}
+
+pub fn parse_document_defs(source: &str) -> (BlockTree, Vec<Range<usize>>, Vec<ReferenceDefinition>) {
+    let parser=Parser::new_ext(source,options());
+    let definitions=parser.reference_definitions().iter().map(|(label,def)|ReferenceDefinition{label:label.to_string(),url:def.dest.to_string(),title:def.title.as_ref().map(ToString::to_string),range:def.span.clone()}).collect();
+    let events: Vec<(Event, Range<usize>)> = parser
         .into_offset_iter()
         .collect();
     let mut cur = Cursor {
@@ -97,7 +106,10 @@ pub fn parse(source: &str) -> BlockTree {
         ix: 0,
     };
     let mut blocks = Vec::new();
-    while let Some((event, _)) = cur.peek() {
+    let mut ranges = Vec::new();
+    while let Some((event, range)) = cur.peek() {
+        let start = range.start;
+        let before = blocks.len();
         match event {
             Event::Rule => {
                 cur.bump();
@@ -107,8 +119,10 @@ pub fn parse(source: &str) -> BlockTree {
             // Stray inline events at the top level should not happen; skip.
             _ => cur.bump(),
         }
+        let end = events.get(cur.ix.saturating_sub(1)).map_or(start, |(_, range)| range.end);
+        ranges.extend((before..blocks.len()).map(|_| start..end));
     }
-    BlockTree { blocks }
+    (BlockTree { blocks }, ranges, definitions)
 }
 
 struct Cursor<'a, 'e> {

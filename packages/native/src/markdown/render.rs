@@ -23,6 +23,7 @@ use crate::theme::{Metrics, Theme};
 use crate::markdown_style::{number, color, tier, heading};
 include!("../markdown_inline.rs");
 include!("../markdown_stream.rs");
+include!("../markdown_document_render.rs");
 include!("../stream_fade_md.rs");
 
 // ── Metrics ──────────────────────────────────────────────────────────
@@ -74,6 +75,7 @@ const INLINE_CODE_INSET_Y: f32 = 2.0;
 ///
 /// Inline code needs its own ranges because `TextRun::background_color` can only
 /// paint a square box; the rounded pill is a canvas underlay.
+#[derive(Clone)]
 pub struct FlatText {
     pub text: SharedString,
     pub runs: Vec<TextRun>,
@@ -185,6 +187,7 @@ pub fn flatten_runs(runs: &[InlineRun], theme: &Theme, base_weight: FontWeight) 
 
 /// Everything block rendering needs. Carries a mutable counter so each painted
 /// text run gets a distinct, document-ordered selection sub-key.
+#[derive(Clone)]
 pub struct MdContext {
     pub element_id: u64,
     pub selection: SharedSelection,
@@ -197,6 +200,8 @@ pub struct MdContext {
     /// Monotonic sub-key counter. Must advance in document order so a drag
     /// resolves spans the same way the reader sees them.
     next_sub: usize,
+    pub viewport: Option<crate::markdown_view::Cache>,
+    pub document_node: Option<DocumentNode>,
     list_depth: usize,
     text_total: usize,
     text_seen: usize,
@@ -226,6 +231,8 @@ impl MdContext {
             theme,
             highlight_set,
             next_sub: 0,
+            viewport: None,
+            document_node: None,
             list_depth: 0,
             text_total: 0,
             text_seen: 0,
@@ -288,6 +295,7 @@ pub fn render_block(block: &Block, ctx: &mut MdContext, window: &Window) -> AnyE
 
     let theme = ctx.theme.clone();
     let m = &theme.metrics;
+    if ctx.viewport.is_some() { if let Some(element)=document_container(block,ctx,window) { return element; } }
     match block {
         Block::Paragraph { runs } => text_element(
             runs,
@@ -399,7 +407,8 @@ fn text_element(
 ) -> AnyElement {
     use gpui::prelude::*;
 
-    let mut flat = flatten_runs(runs, &ctx.theme, weight);
+    if ctx.viewport.is_some() && ctx.theme.markdown.stream.is_none() {return document_text(runs,size,line_height,weight,ctx); }
+    let mut flat = if let Some(cache)=&ctx.viewport { crate::markdown_view::cached(cache,ctx.next_sub,||flatten_runs(runs,&ctx.theme,weight)).as_ref().clone() } else { flatten_runs(runs, &ctx.theme, weight) };
     ctx.text_seen += 1;
     if ctx.stream_final && ctx.text_seen == ctx.text_total { stream_prepare(&mut flat, ctx); }
     let fading = !flat.fades.is_empty();
@@ -417,6 +426,10 @@ fn text_element(
 /// Selectable text with the inline-code wash painted underneath.
 fn flat_text_element(flat: &FlatText, size: f32, ctx: &mut MdContext) -> AnyElement {
     let sub = ctx.take_sub();
+    document_record(ctx,sub,flat.text.clone(),None);
+    let retained_layout=ctx.viewport.as_ref().map(|cache|crate::markdown_view::cached(cache,sub,||gpui::TextLayout::default()).as_ref().clone());
+    let run_provider=ctx.viewport.as_ref().map(|cache| {let runs=crate::markdown_view::cached(cache,sub,||flat.runs.clone());Rc::new(move||runs.as_ref().clone()) as Rc<dyn Fn()->Vec<TextRun>>});
+    let shared_links=ctx.viewport.as_ref().map(|cache|crate::markdown_view::cached(cache,sub,||Arc::new(flat.links.clone())).as_ref().clone());
     let code_ranges = flat.code_ranges.clone();
     let icons = flat.icons.clone();
     let fades = flat.fades.clone();
@@ -450,9 +463,12 @@ fn flat_text_element(flat: &FlatText, size: f32, ctx: &mut MdContext) -> AnyElem
     // set `userSelect: "none"` and still want its links clickable, so this
     // routes through `chrome_text` for the glyphs but keeps the link listener.
     crate::text::selectable_text(crate::text::SelectableText {
+        run_provider: run_provider.clone(),
+        retained_layout,
         extra_wash: extra,
         hover_link_color: (ctx.theme.markdown.link.underline.as_deref() == Some("hover")).then(||color(&ctx.theme.markdown.link.color, ctx.theme.text)),
-        links: flat.links.clone(),
+        links: if shared_links.is_some(){Vec::new()}else{flat.links.clone()},
+        shared_links,
         on_link: ctx.on_link.clone(),
         selectable: ctx.selectable,
         highlight: ctx
@@ -463,7 +479,7 @@ fn flat_text_element(flat: &FlatText, size: f32, ctx: &mut MdContext) -> AnyElem
             ctx.element_id,
             sub,
             flat.text.clone(),
-            Some(flat.runs.clone()),
+            if run_provider.is_some(){None}else{Some(flat.runs.clone())},
             ctx.selection.clone(),
             ctx.selection_wash,
         )
