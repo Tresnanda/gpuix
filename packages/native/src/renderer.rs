@@ -4490,8 +4490,7 @@ impl GpuixView {
             entry.seen_rows.insert(expected_child_id);
             (entry.child_at(index) == Some(expected_child_id))
                 .then(|| {
-                    index
-                        .checked_sub(entry.window_start)
+                    entry.child_offset(index)
                         .and_then(|offset| entry.row_focus_handles.get(offset).cloned())
                 })
                 .flatten()
@@ -4500,15 +4499,9 @@ impl GpuixView {
 
         let tree_arc = self.tree.clone();
         let tree = tree_arc.lock().unwrap();
-        let window_start = self
-            .virtual_lists
-            .get(&list_id)
-            .map(|entry| entry.window_start)
-            .unwrap_or(0);
+        let row_offset = self.virtual_lists.get(&list_id).and_then(|entry| entry.child_offset(index));
         let child_matches = tree.elements.get(&list_id).and_then(|list| {
-            index
-                .checked_sub(window_start)
-                .and_then(|offset| list.children.get(offset))
+            row_offset.and_then(|offset|list.children.get(offset))
         }) == Some(&expected_child_id);
         if !child_matches {
             let height = self
@@ -4872,7 +4865,10 @@ impl VirtualListConfig {
     }
 }
 
+include!("sparse_list.rs");
+
 pub(crate) struct VirtualListEntry {
+    sparse: SparseList,
     state: gpui::ListState,
     config: VirtualListConfig,
     window_start: usize,
@@ -4906,6 +4902,7 @@ impl VirtualListEntry {
             }
         }
         Self {
+            sparse: Default::default(),
             state,
             config,
             window_start,
@@ -4917,12 +4914,14 @@ impl VirtualListEntry {
     }
 
     fn child_at(&self, logical_index: usize) -> Option<u64> {
+        if self.sparse.active { return self.sparse.children.get(&logical_index).copied(); }
         logical_index
             .checked_sub(self.window_start)
             .and_then(|offset| self.child_ids.get(offset).copied())
     }
 
     fn logical_index_of(&self, child_id: u64) -> Option<usize> {
+        if self.sparse.active { return self.sparse.children.iter().find_map(|(ix,id)| (*id == child_id).then_some(*ix)); }
         self.child_ids
             .iter()
             .position(|id| *id == child_id)
@@ -5805,14 +5804,16 @@ fn build_virtual_list(
     };
     let list_state = match ctx.virtual_lists.entry(element.id) {
         std::collections::hash_map::Entry::Occupied(mut entry) => {
-            entry.get_mut().sync(
+            if element.custom_props().contains_key("sparseVersion") {
+                entry.get_mut().sync_sparse(element, config, child_ids.clone(), child_revisions.clone(), &focusable_rows, cx);
+            } else { entry.get_mut().sync(
                 config,
                 window_start,
                 child_ids.clone(),
                 child_revisions,
                 &focusable_rows,
                 cx,
-            );
+            ); }
             let entry = entry.into_mut();
             if let Some(row_id) = focused_row.filter(|row_id| !entry.seen_rows.contains(row_id)) {
                 if let Some(index) = entry.logical_index_of(row_id) {
@@ -5827,7 +5828,7 @@ fn build_virtual_list(
         std::collections::hash_map::Entry::Vacant(entry) => {
             let row_focus_handles = child_ids
                 .iter()
-                .map(|id| focusable_rows.contains(id).then(|| cx.focus_handle()))
+                .map(|id| (!element.custom_props().contains_key("sparseVersion") && focusable_rows.contains(id)).then(|| cx.focus_handle()))
                 .collect();
             let entry = entry.insert(VirtualListEntry::new(
                 config,
@@ -5836,6 +5837,7 @@ fn build_virtual_list(
                 child_revisions,
                 row_focus_handles,
             ));
+            if element.custom_props().contains_key("sparseVersion") { entry.sync_sparse(element, config, child_ids.clone(), entry.child_revisions.clone(), &focusable_rows, cx); }
             if let Some(row_id) = focused_row {
                 if let Some(index) = entry.logical_index_of(row_id) {
                     entry.state.scroll_to(gpui::ListOffset {
@@ -5879,9 +5881,9 @@ fn build_virtual_list(
         };
         let Some(child_id) = entry.child_at(index) else {
             // Empty measures as 0 and poisons ListState. Keep the estimate.
-            return unmounted_virtual_row(entry.config.estimated_item_height.unwrap_or(1.0));
+            return unmounted_virtual_row(entry.sparse.height(index, entry.config.estimated_item_height.unwrap_or(1.0)));
         };
-        let layout_revision = entry.child_revisions.get(index.saturating_sub(entry.window_start)).copied().unwrap_or(0);
+        let layout_revision = entry.sparse.revisions.get(&index).copied().or_else(||entry.child_revisions.get(index.saturating_sub(entry.window_start)).copied()).unwrap_or(0);
         let row = view.build_virtual_child(list_id, index, child_id, inherited.clone(), window, cx);
         if cache_layout { crate::scroll_layout::apply(row, [list_id, child_id, layout_revision]) } else { row }
     });
