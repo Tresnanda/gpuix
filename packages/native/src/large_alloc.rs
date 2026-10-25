@@ -3,6 +3,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 
 const THRESHOLD: usize = 4 * 1024 * 1024;
+include!("code_alloc.rs");
 
 #[derive(Debug, Default)]
 pub(crate) struct Snapshot {
@@ -52,7 +53,7 @@ mod mapping {
 
     #[inline]
     fn mapped(layout: Layout) -> bool {
-        layout.size() >= THRESHOLD && enabled() && layout.align() <= unsafe { getpagesize() } as usize
+        layout.size() >= 64 * 1024 && layout.size() >= allocation_threshold() && enabled() && layout.align() <= unsafe { getpagesize() } as usize
     }
 
     unsafe fn allocate(layout: Layout) -> *mut u8 {
@@ -130,7 +131,7 @@ mod mapping {
     pub(super) fn snapshot() -> Snapshot {
         Snapshot {
             enabled: enabled(),
-            threshold_bytes: THRESHOLD,
+            threshold_bytes: allocation_threshold(),
             current_bytes: CURRENT.load(Relaxed),
             peak_bytes: PEAK.load(Relaxed),
             map_calls: MAPS.load(Relaxed),

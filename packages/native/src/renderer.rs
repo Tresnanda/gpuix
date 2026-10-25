@@ -2208,6 +2208,14 @@ impl GpuixRenderer {
             "images":crate::custom_elements::img::image_memory_stats(cx),
             "editorImages":crate::rich_editor::image_memory_stats(),
             "largeAllocations":crate::large_alloc::memory_stats(),
+            "syntaxCache": ({
+                let cache = crate::syntax::cache::stats();
+                serde_json::json!({"documents":cache.documents,"retainedBytes":cache.retained_bytes,"hits":cache.hits,"misses":cache.misses})
+            }),
+            "dispatchFrames":window.dispatch_memory_stats(),
+            "textLayouts":window.text_layout_memory_stats(),
+            "textLayoutCapacities":window.text_layout_capacity_stats(),
+            "appElementArenaBytes":cx.element_arena_memory_bytes(),
             "metalGauges":gpui::memory_debug_stats(),
             "elementArenaBytes":window.element_arena_memory_bytes(),
             "layoutNodeHighWater":window.layout_memory_peak_nodes(),
