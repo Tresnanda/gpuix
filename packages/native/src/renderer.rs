@@ -1163,6 +1163,7 @@ impl GpuixRenderer {
         // window.refresh() (which disables every cache).
         #[cfg(target_os = "macos")]
         return update_window(|view, _window, cx| {
+            if gpui::kybern_motion_trace_enabled() { gpui::kybern_motion_trace(format_args!("batch")); }
             if !crate::subtree_transform::invalidate(view, _window, cx) && !crate::subtree_translation::invalidate(view, _window, cx) { crate::paint_replay::invalidate(view, _window, cx); }
         });
 
@@ -5566,6 +5567,7 @@ impl gpui::Render for GpuixView {
         crate::subtree_translation::arm(self,window,cx);
         crate::subtree_transform::sync(&tree,self.clock.now());
         crate::subtree_transform::arm(self,window,cx);
+        if gpui::kybern_motion_trace_enabled() { gpui::kybern_motion_trace(format_args!("render")); }
         crate::stroke_draw::arm(&self.clock);
         crate::file_drag::sweep(window,cx);
         // Build the element tree. custom_registry, focus_handles, and scroll_handles
@@ -5574,6 +5576,13 @@ impl gpui::Render for GpuixView {
         let now = self.clock.now();
         let (motion_active, motion_settled) =
             sync_motion_frame(&tree, &mut self.motion_states, &mut self.motion_sync, window, now);
+        if gpui::kybern_motion_trace_enabled() {
+            let mut line = String::new();
+            for (id, state) in &self.motion_states {
+                if let Some(opacity) = state.visible_style(now).and_then(|s| s.opacity) { line.push_str(&format!(" {id}:{opacity:.3}")); }
+            }
+            gpui::kybern_motion_trace(format_args!("motion{line}"));
+        }
         // Pruned by DECLARATION, not existence: an element that drops its
         // `highlight` prop keeps living, and its cached group list holds a copy
         // of every string in its subtree.
