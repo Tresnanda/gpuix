@@ -28,6 +28,7 @@ mod diff_style;
 mod markdown_style;
 mod layout_observer;
 mod window_drag;
+mod window_platform;
 mod key_intercept;
 mod close_guard;
 mod secure_input;

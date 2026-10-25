@@ -2084,6 +2084,66 @@ impl GpuixRenderer {
         {let _=(x,y,delta_x,delta_y,phase,modifiers);Err(Error::from_reason("Phase injection requires macOS"))}
     }
     #[napi]
+    pub fn set_window_background(&self, mode: String) -> Result<()> {
+        let appearance = crate::window_platform::background(&mode)?;
+        #[cfg(target_os = "macos")]
+        return update_window_without_view(move |window, _cx| window.set_background_appearance(appearance));
+        #[cfg(not(target_os = "macos"))]
+        { let _ = appearance; Err(Error::from_reason("Runtime window backgrounds are currently macOS-only")) }
+    }
+
+    /// The system title-bar double-click action (zoom, minimize or nothing, per System Settings).
+    #[napi]
+    pub fn titlebar_double_click(&self) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        return update_window_without_view(|window, _cx| window.titlebar_double_click());
+        #[cfg(not(target_os = "macos"))]
+        Err(Error::from_reason("Title-bar actions are currently macOS-only"))
+    }
+
+    /// Put an image on the system pasteboard (`mediaType` such as `image/png`).
+    #[napi]
+    pub fn write_clipboard_image(&self, data: Buffer, media_type: String) -> Result<()> {
+        let item = crate::window_platform::clipboard_image(&data, &media_type)?;
+        update_window_without_view(move |_window, cx| cx.write_to_clipboard(item))
+    }
+
+    /// Open the platform save panel in `directory`. Resolves to `[path]`, or null when cancelled.
+    #[napi(ts_return_type = "Promise<Array<string> | null>")]
+    pub fn prompt_for_new_path<'env>(&self, env: &'env Env, directory: String, suggested_name: Option<String>) -> Result<Object<'env>> {
+        let (deferred, promise): (PathPromptDeferred, Object<'env>) = env.create_deferred()?;
+        #[cfg(target_os = "macos")]
+        {
+            let prompt = GPUI_APP.with(|app| {
+                let app = app.borrow();
+                let app = app.as_ref().ok_or_else(|| Error::from_reason("GPUI application is not initialized"))?;
+                Ok(app.update(|cx| (cx.background_executor().clone(), cx.prompt_for_new_path(std::path::Path::new(&directory), suggested_name.as_deref()))))
+            });
+            match prompt {
+                Ok((executor, receiver)) => executor
+                    .spawn(async move {
+                        let result = receiver
+                            .await
+                            .map_err(|_| Error::from_reason("The save panel closed without a result"))
+                            .and_then(|result| path_prompt_result(result.map(|path| path.map(|path| vec![path]))));
+                        match result {
+                            Ok(paths) => deferred.resolve(Box::new(move |_env| Ok(paths))),
+                            Err(error) => deferred.reject(error),
+                        }
+                    })
+                    .detach(),
+                Err(error) => deferred.reject(error),
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (directory, suggested_name);
+            deferred.reject(Error::from_reason("The save panel is currently macOS-only"));
+        }
+        Ok(promise)
+    }
+
+    #[napi]
     pub fn zoom_window(&self) -> Result<()> {
         #[cfg(target_os = "macos")]
         return update_window(|_view, window, _cx| window.zoom_window());
@@ -5975,6 +6035,8 @@ pub(crate) fn build_host_container(
 
     if element.custom_props().get("windowDrag").and_then(|v| v.as_bool()) == Some(true) {
         el = crate::window_drag::apply(el);
+    } else if crate::window_drag::is_control(element.events(), element.custom_props()) {
+        el = crate::window_drag::control(el);
     }
 
     // Wire up events.
@@ -7946,6 +8008,7 @@ fn to_gpui_window_options(
             appears_transparent: titlebar_transparent,
             traffic_light_position,
         }),
+        app_owns_titlebar_drag: titlebar_transparent,
         // Display-rate inactive motion parks when the window is occluded.
         // Keep the previous cadence selectable for diagnostic comparisons.
         inactive_frame_interval: if std::env::var("KYBERN_FULL_RATE").as_deref()==Ok("0") { Some(std::time::Duration::from_micros(33_333)) } else { None },
