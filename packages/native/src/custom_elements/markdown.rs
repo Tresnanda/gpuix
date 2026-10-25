@@ -67,9 +67,10 @@ impl CustomElement for MarkdownElement {
         &mut self,
         ctx: CustomRenderContext,
         window: &mut gpui::Window,
-        _cx: &mut gpui::Context<crate::renderer::GpuixView>,
+        cx: &mut gpui::Context<crate::renderer::GpuixView>,
     ) -> gpui::AnyElement {
         use gpui::prelude::*;
+        crate::kybern_icon::set_renderer(cx.svg_renderer());
 
         let theme = self.theme.clone();
         let tree = self.tree();

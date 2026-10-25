@@ -16,6 +16,7 @@ mod accessibility;
 mod app_menu;
 mod automation;
 mod cache_island;
+mod kybern_icon;
 mod scroll_layout;
 mod clipboard;
 mod frame_clock;

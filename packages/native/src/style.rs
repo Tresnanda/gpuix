@@ -269,6 +269,7 @@ pub struct StyleDesc {
     // Uses Box to avoid infinite-size struct (StyleDesc contains StyleDesc).
     pub hover: Option<Box<StyleDesc>>,
     pub active: Option<Box<StyleDesc>>,
+    pub drag_over: Option<Box<StyleDesc>>,
     /// While focused after keyboard input, like CSS `:focus-visible`.
     pub focus_visible: Option<Box<StyleDesc>>,
     /// `false` keeps this element at full opacity while another control has

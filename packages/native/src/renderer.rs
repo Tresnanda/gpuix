@@ -2023,6 +2023,23 @@ impl GpuixRenderer {
         })
     }
     #[napi]
+    pub fn simulate_file_drag(&self, x: f64, y: f64, paths: Vec<String>, phase: String) -> Result<()> {
+        if !x.is_finite() || !y.is_finite() { return Err(Error::from_reason("Expected a finite position")); }
+        update_window_without_view(move |window, cx| {
+            use gpui::InputEvent;
+            let position=gpui::point(gpui::px(x as f32),gpui::px(y as f32));
+            match phase.as_str() {
+                "enter" => {
+                    let paths=gpui::ExternalPaths(paths.into_iter().map(std::path::PathBuf::from).collect());
+                    window.dispatch_event(gpui::FileDropEvent::Entered { position, paths }.to_platform_input(),cx);
+                    window.dispatch_event(gpui::FileDropEvent::Pending { position }.to_platform_input(),cx);
+                }
+                "move" => { window.dispatch_event(gpui::FileDropEvent::Pending { position }.to_platform_input(),cx); }
+                _ => { window.dispatch_event(gpui::FileDropEvent::Ended.to_platform_input(),cx); }
+            }
+        })
+    }
+    #[napi]
     pub fn simulate_file_drop(&self, x: f64, y: f64, paths: Vec<String>) -> Result<()> {
         if !x.is_finite() || !y.is_finite() || paths.is_empty() { return Err(Error::from_reason("Expected a finite position and nonempty paths")); }
         update_window_without_view(move |window, cx| {
@@ -6559,6 +6576,10 @@ where
     }
     if let Some(active_style) = style.active.as_deref() {
         el = el.active(|refinement| apply_styles(refinement, active_style));
+    }
+    if let Some(drag_style) = style.drag_over.as_deref() {
+        let drag_style = drag_style.clone();
+        el = el.drag_over::<gpui::ExternalPaths>(move |refinement, _, _, _| apply_styles(refinement, &drag_style));
     }
     // `focusVisible` needs the focus handle, so `apply_focus_visible` applies
     // it where the element calls track_focus.

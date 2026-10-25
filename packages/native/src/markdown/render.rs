@@ -22,6 +22,7 @@ use crate::text::{range_rects, runs::runs_for_spans, SharedSelection};
 use crate::theme::{Metrics, Theme};
 use crate::markdown_style::{number, color, tier, heading};
 include!("../markdown_inline.rs");
+include!("../markdown_stream.rs");
 
 // ── Metrics ──────────────────────────────────────────────────────────
 //
@@ -77,6 +78,8 @@ pub struct FlatText {
     pub runs: Vec<TextRun>,
     pub links: Vec<(Range<usize>, String)>,
     pub code_ranges: Vec<Range<usize>>,
+    /// `(byte index, image)` for links that lead with an icon; the two placeholder characters at the index reserve its room.
+    pub icons: Vec<(usize, Arc<gpui::RenderImage>)>,
 }
 
 /// Flatten inline runs into shaped-text inputs. Pure given a theme.
@@ -85,10 +88,23 @@ pub fn flatten_runs(runs: &[InlineRun], theme: &Theme, base_weight: FontWeight) 
     let mut out: Vec<TextRun> = Vec::with_capacity(runs.len());
     let mut links: Vec<(Range<usize>, String)> = Vec::new();
     let mut code_ranges: Vec<Range<usize>> = Vec::new();
+    let mut icons: Vec<(usize, Arc<gpui::RenderImage>)> = Vec::new();
 
     for run in runs {
         if run.text.is_empty() {
             continue;
+        }
+        let mut link_from = None;
+        if let Some(url) = &run.style.link {
+            let continues = links.last().is_some_and(|(range, last)| range.end == text.len() && last == url);
+            if !continues {
+                if let Some(image) = theme.markdown.link_icons.iter().find(|icon| url.starts_with(&icon.prefix)).and_then(|icon| crate::kybern_icon::image(&icon.svg, &icon.color)) {
+                    link_from = Some(text.len());
+                    icons.push((text.len(), image));
+                    text.push_str("  ");
+                    out.push(TextRun { len: 2, font: font(theme.font_mono.clone()), color: gpui::transparent_black(), background_color: None, underline: None, strikethrough: None });
+                }
+            }
         }
         let start = text.len();
         text.push_str(&run.text);
@@ -121,17 +137,20 @@ pub fn flatten_runs(runs: &[InlineRun], theme: &Theme, base_weight: FontWeight) 
                 Some((range, last_url)) if range.end == start && last_url == url => {
                     range.end = text.len();
                 }
-                _ => links.push((start..text.len(), url.clone())),
+                _ => links.push((link_from.unwrap_or(start)..text.len(), url.clone())),
             }
         }
 
         if run.style.link.is_some() { f.weight = FontWeight(number(theme.markdown.link.weight, f.weight.0).clamp(1.0, 1000.0)); }
+        let chip = run.style.link.as_ref().and_then(|url| theme.markdown.link_icons.iter().find(|icon| url.starts_with(&icon.prefix)));
+        if let Some(weight) = chip.and_then(|icon| icon.weight) { f.weight = FontWeight(weight); }
+        let link_color = chip.and_then(|icon| icon.text_color.clone()).or_else(|| theme.markdown.link.color.clone());
         out.push(TextRun {
             len: run.text.len(),
             font: f,
             // Inline code reads violet; links stay the monochrome foreground
             // with an underline, because accent is reserved for actions.
-            color: if run.style.link.is_some() { color(&theme.markdown.link.color, theme.text) } else if run.style.code {
+            color: if run.style.link.is_some() { color(&link_color, theme.text) } else if run.style.code {
                 theme.code_text
             } else {
                 theme.text
@@ -154,6 +173,7 @@ pub fn flatten_runs(runs: &[InlineRun], theme: &Theme, base_weight: FontWeight) 
         runs: out,
         links,
         code_ranges,
+        icons,
     }
 }
 
@@ -174,6 +194,11 @@ pub struct MdContext {
     /// resolves spans the same way the reader sees them.
     next_sub: usize,
     list_depth: usize,
+    text_total: usize,
+    text_seen: usize,
+    stream_final: bool,
+    animating: bool,
+    caret: Option<Hsla>,
     /// Called with the URL of the link under a click. Hit testing happens per
     /// byte range inside the painted text, not per block.
     pub on_link: Option<Arc<dyn Fn(&str)>>,
@@ -198,6 +223,11 @@ impl MdContext {
             highlight_set,
             next_sub: 0,
             list_depth: 0,
+            text_total: 0,
+            text_seen: 0,
+            stream_final: false,
+            animating: false,
+            caret: None,
             on_link,
         }
     }
@@ -216,6 +246,16 @@ impl MdContext {
 /// `window` is threaded through only so tables can shape their cells to measure
 /// max-content widths, the same resolution CSS performs.
 pub fn render_tree(tree: &BlockTree, ctx: &mut MdContext, window: &Window) -> AnyElement {
+    ctx.text_total = count_text(&tree.blocks);
+    ctx.text_seen = 0;
+    ctx.stream_final = ctx.theme.markdown.stream.is_some() && ends_with_text(&tree.blocks);
+    let out = render_tree_inner(tree, ctx, window);
+    // The newest words are still fading in: another frame, until they have settled.
+    if ctx.animating { window.request_animation_frame(); }
+    out
+}
+
+fn render_tree_inner(tree: &BlockTree, ctx: &mut MdContext, window: &Window) -> AnyElement {
     use gpui::prelude::*;
 
     let theme = ctx.theme.clone();
@@ -230,7 +270,7 @@ pub fn render_tree(tree: &BlockTree, ctx: &mut MdContext, window: &Window) -> An
             let (size, _) = heading(&theme,*level);
             (number(tier(&theme.markdown.heading_margin_tops,*level).or(theme.markdown.heading_margin_top), 0.0) * size,
              number(theme.markdown.heading_margin_bottom, 0.0) * size)
-        } else { (theme.metrics.md_block_gap, theme.metrics.md_block_gap) };
+        } else if matches!(block, Block::Rule) { let rule = number(theme.markdown.rule_margin, theme.metrics.md_block_gap); (rule, rule) } else { (theme.metrics.md_block_gap, theme.metrics.md_block_gap) };
         let gap = if index == 0 { 0.0 } else if previous_heading && !matches!(block,Block::Heading { .. }) { number(theme.markdown.heading_following_gap, previous_bottom.max(top)) } else { previous_bottom.max(top) };
         children.push(div().mt(px(gap)).child(render_block(block, ctx, window)).into_any_element());
         previous_bottom = bottom;
@@ -278,6 +318,7 @@ pub fn render_block(block: &Block, ctx: &mut MdContext, window: &Window) -> AnyE
         } => {
             let mut list = div().flex().flex_col().gap(px(number(theme.markdown.list_item_gap, 4.0)));
             for (item_ix, item) in items.iter().enumerate() {
+                let after_list = item_ix > 0 && matches!(items[item_ix - 1].last(), Some(Block::List { .. }));
                 // Ordered numbers are accent-tinted text; unordered markers are
                 // a real 5px disc, because the glyph "•" reads too small at 14px.
                 let marker: AnyElement = match ordered_start {
@@ -302,6 +343,7 @@ pub fn render_block(block: &Block, ctx: &mut MdContext, window: &Window) -> AnyE
                         .child(
                             div()
                                 .ml(px(1.0))
+                                .mr(px((number(theme.markdown.list_bullet_gap, number(theme.markdown.list_marker_gap, 8.0)) - number(theme.markdown.list_marker_gap, 8.0)).max(0.0)))
                                 .w(px(number(theme.markdown.list_marker_size, 5.0)))
                                 .h(px(number(theme.markdown.list_marker_size, 5.0)))
                                 .rounded(px(if theme.markdown.nested_list_markers && ctx.list_depth % 3 == 2 { 0.0 } else { number(theme.markdown.list_marker_size,5.0)/2.0 }))
@@ -318,7 +360,7 @@ pub fn render_block(block: &Block, ctx: &mut MdContext, window: &Window) -> AnyE
                     .collect();
                 ctx.list_depth -= 1;
                 list = list.child(
-                    div().flex().flex_row().gap(px(number(theme.markdown.list_marker_gap, 8.0))).child(marker).child(
+                    div().when(after_list, |el| el.mt(px((number(theme.markdown.list_child_gap, 4.0) - number(theme.markdown.list_item_gap, 4.0)).max(0.0)))).flex().flex_row().gap(px(number(theme.markdown.list_marker_gap, 8.0))).child(marker).child(
                         div()
                             .flex_1()
                             .min_w_0()
@@ -353,7 +395,9 @@ fn text_element(
 ) -> AnyElement {
     use gpui::prelude::*;
 
-    let flat = flatten_runs(runs, &ctx.theme, weight);
+    let mut flat = flatten_runs(runs, &ctx.theme, weight);
+    ctx.text_seen += 1;
+    if ctx.stream_final && ctx.text_seen == ctx.text_total { stream_prepare(&mut flat, ctx); }
     let inner = inline_element(&flat, size, line_height, None, ctx);
     div()
         .w_full()
@@ -365,12 +409,15 @@ fn text_element(
 }
 
 /// Selectable text with the inline-code wash painted underneath.
-fn flat_text_element(flat: &FlatText, ctx: &mut MdContext) -> AnyElement {
+fn flat_text_element(flat: &FlatText, size: f32, ctx: &mut MdContext) -> AnyElement {
     let sub = ctx.take_sub();
     let code_ranges = flat.code_ranges.clone();
+    let icons = flat.icons.clone();
+    let caret = ctx.caret.take();
+    let text_len = flat.text.len();
     let wash = ctx.theme.code_wash;
     let radius = ctx.theme.metrics.md_inline_code_radius;
-    let extra: Option<Box<dyn Fn(&gpui::TextLayout, &mut gpui::Window)>> = if code_ranges.is_empty()
+    let extra: Option<Box<dyn Fn(&gpui::TextLayout, &mut gpui::Window)>> = if code_ranges.is_empty() && icons.is_empty() && caret.is_none()
     {
         None
     } else {
@@ -387,6 +434,7 @@ fn flat_text_element(flat: &FlatText, ctx: &mut MdContext) -> AnyElement {
                     ));
                 }
             }
+            paint_decorations(layout, window, &icons, 2, caret, text_len, size);
         }))
     };
 
