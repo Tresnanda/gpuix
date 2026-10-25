@@ -5404,7 +5404,10 @@ pub(crate) fn build_element(
     };
 
     ctx.inherited = parent_inherited;
-    built
+    let translated = ctx.motion_states.get(&id).and_then(|state| state.visible_style(ctx.now));
+    if let Some(motion) = translated {
+        crate::translate::apply(built, motion.translate_x.unwrap_or(0.0), motion.translate_y.unwrap_or(0.0))
+    } else { built }
 }
 
 fn build_virtual_list(

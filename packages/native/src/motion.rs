@@ -18,6 +18,8 @@ pub(crate) struct MotionStyle {
     pub bottom: Option<f64>,
     pub left: Option<f64>,
     pub border_radius: Option<f64>,
+    pub translate_x: Option<f64>,
+    pub translate_y: Option<f64>,
 }
 
 impl MotionStyle {
@@ -31,6 +33,8 @@ impl MotionStyle {
             bottom: self.bottom.or(fallback.bottom),
             left: self.left.or(fallback.left),
             border_radius: self.border_radius.or(fallback.border_radius),
+            translate_x: self.translate_x.or(fallback.translate_x),
+            translate_y: self.translate_y.or(fallback.translate_y),
         }
     }
 
@@ -48,18 +52,20 @@ impl MotionStyle {
             bottom: value(self.bottom, target.bottom, progress),
             left: value(self.left, target.left, progress),
             border_radius: value(self.border_radius, target.border_radius, progress),
+            translate_x: value(self.translate_x, target.translate_x, progress),
+            translate_y: value(self.translate_y, target.translate_y, progress),
         }
     }
 
     pub(crate) fn apply_to(self, style: &mut StyleDesc) {
         if let Some(value) = self.width {
-            style.width = Some(DimensionValue::Pixels(value));
+            style.width = Some(DimensionValue::Pixels(value.max(0.0)));
         }
         if let Some(value) = self.height {
-            style.height = Some(DimensionValue::Pixels(value));
+            style.height = Some(DimensionValue::Pixels(value.max(0.0)));
         }
         if let Some(value) = self.opacity {
-            style.opacity = Some(value);
+            style.opacity = Some(value.clamp(0.0, 1.0));
         }
         if let Some(value) = self.top {
             style.top = Some(value);
@@ -74,7 +80,7 @@ impl MotionStyle {
             style.left = Some(value);
         }
         if let Some(value) = self.border_radius {
-            style.border_radius = Some(value);
+            style.border_radius = Some(value.max(0.0));
         }
     }
 }
@@ -96,6 +102,10 @@ enum MotionEase {
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 struct MotionTransition {
+    #[serde(default, rename = "type")]
+    kind: Option<String>,
+    #[serde(default)]
+    bounce: f64,
     #[serde(default = "default_duration")]
     duration: f64,
     #[serde(default)]
@@ -107,6 +117,8 @@ struct MotionTransition {
 impl Default for MotionTransition {
     fn default() -> Self {
         Self {
+            kind: None,
+            bounce: 0.0,
             duration: default_duration(),
             delay: 0.0,
             ease: default_ease(),
@@ -252,7 +264,9 @@ impl MotionState {
             elapsed.saturating_sub(delay).as_secs_f64() / duration.as_secs_f64()
         };
         let active = self.from != self.target && raw < 1.0;
-        let progress = ease(raw.clamp(0.0, 1.0), &self.transition.ease);
+        let progress = if self.transition.kind.as_deref() == Some("spring") {
+            crate::spring::progress(raw.clamp(0.0, 1.0), self.transition.bounce)
+        } else { ease(raw.clamp(0.0, 1.0), &self.transition.ease) };
         (self.from.interpolate(self.target, progress), active)
     }
 
@@ -305,6 +319,12 @@ fn parse_description(source: &serde_json::Value) -> Result<MotionDescription, St
     validate_seconds(description.transition.duration, "duration")?;
     validate_seconds(description.transition.delay, "delay")?;
     validate_ease(&description.transition.ease)?;
+    if !matches!(description.transition.kind.as_deref(), None | Some("tween" | "spring")) {
+        return Err("motion transition type must be tween or spring".into());
+    }
+    if !description.transition.bounce.is_finite() || !(0.0..=1.0).contains(&description.transition.bounce) {
+        return Err("motion spring bounce must be between 0 and 1".into());
+    }
     Ok(description)
 }
 
@@ -318,6 +338,8 @@ fn validate_style(style: &MotionStyle) -> Result<(), String> {
         ("bottom", style.bottom),
         ("left", style.left),
         ("borderRadius", style.border_radius),
+        ("translateX", style.translate_x),
+        ("translateY", style.translate_y),
     ] {
         if value.is_some_and(|value| !value.is_finite() || value.abs() > f32::MAX as f64) {
             return Err(format!("motion {name} must fit a finite 32-bit float"));
