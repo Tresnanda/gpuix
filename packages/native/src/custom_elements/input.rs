@@ -326,6 +326,8 @@ struct TextEditorElement {
     last_prop_value: Option<String>,
     theme: Theme,
     state: Option<Entity<TextEditorState>>,
+    intercept_keys: Vec<String>,
+    key_interceptor: Option<gpui::Subscription>,
 }
 
 impl TextEditorElement {
@@ -340,6 +342,8 @@ impl TextEditorElement {
             last_prop_value: None,
             theme: Theme::dark(),
             state: None,
+            intercept_keys: Vec::new(),
+            key_interceptor: None,
         }
     }
 }
@@ -374,6 +378,7 @@ impl CustomElement for TextEditorElement {
                 let callback = callback.clone();
                 let id = ctx.id;
                 let cursor = value.len();
+                let intercept_keys = self.intercept_keys.clone();
                 let state_focus_handle = focus_handle.clone();
                 cx.new(move |cx| TextEditorState {
                     element_id: id,
@@ -381,6 +386,7 @@ impl CustomElement for TextEditorElement {
                     emits_change,
                     emits_submit,
                     emits_key_down,
+                    intercept_keys,
                     emits_key_up,
                     focus_handle: state_focus_handle,
                     content: value,
@@ -418,6 +424,21 @@ impl CustomElement for TextEditorElement {
             })
             .clone();
 
+        #[cfg(target_os = "macos")]
+        if self.key_interceptor.is_none() {
+            let weak = state.downgrade();
+            self.key_interceptor = Some(cx.intercept_keystrokes(move |event, window, cx| {
+                if crate::key_intercept::replaying() { return; }
+                let Some(state) = weak.upgrade() else { return; };
+                let state = state.read(cx);
+                if state.emits_key_down && state.marked_range.is_none()
+                    && state.focus_handle.is_focused(window)
+                    && (state.intercept_keys.contains(&event.keystroke.key) || crate::key_intercept::pending())
+                {
+                    crate::key_intercept::capture(state.element_id, state.focus_handle.clone(), state.intercept_keys.contains(&event.keystroke.key), window, cx);
+                }
+            }));
+        }
         let prop_changed = self.last_prop_value.as_ref() != Some(&self.value);
         state.update(cx, |state, cx| {
             state.callback = callback;
@@ -427,6 +448,7 @@ impl CustomElement for TextEditorElement {
                 cx.notify();
             }
             state.emits_key_down = emits_key_down;
+            state.intercept_keys = self.intercept_keys.clone();
             state.emits_key_up = emits_key_up;
             state.placeholder = self.placeholder.clone().into();
             state.read_only = self.read_only;
@@ -528,6 +550,7 @@ impl CustomElement for TextEditorElement {
         match key {
             "value" => self.value = value.as_str().unwrap_or_default().to_string(),
             "placeholder" => self.placeholder = value.as_str().unwrap_or_default().to_string(),
+            "interceptKeys" => self.intercept_keys = value.as_array().map(|keys| keys.iter().filter_map(|k| k.as_str().map(str::to_owned)).collect()).unwrap_or_default(),
             "readOnly" => self.read_only = value.as_bool().unwrap_or(false),
             "minRows" => self.min_rows = value.as_u64().unwrap_or(1) as usize,
             "maxRows" => {
@@ -548,6 +571,7 @@ impl CustomElement for TextEditorElement {
             "readOnly",
             "minRows",
             "maxRows",
+            "interceptKeys",
             "theme",
         ]
     }
@@ -560,6 +584,7 @@ impl CustomElement for TextEditorElement {
 
     fn destroy(&mut self) {
         self.state = None;
+        self.key_interceptor = None;
     }
 }
 
@@ -649,6 +674,7 @@ struct TextEditorState {
     emits_change: bool,
     emits_submit: bool,
     emits_key_down: bool,
+    intercept_keys: Vec<String>,
     emits_key_up: bool,
     focus_handle: FocusHandle,
     content: String,
@@ -1715,6 +1741,7 @@ impl gpui::Render for TextEditorState {
             .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
             .when(self.emits_key_down, move |editor| {
                 editor.on_key_down(move |event, _window, _cx| {
+                    if crate::key_intercept::replaying() { return; }
                     emit_key_event(
                         &key_down_callback,
                         element_id,
