@@ -58,11 +58,11 @@ pub(crate) fn apply(child: AnyElement, element: &RetainedElement, style: Option<
     let Some(kind) = style.and_then(|style| kind(element, style)) else { return child; };
     let animation = element.custom_props().get("paintAnimation").and_then(|value| {
         let mode = value.get("kind")?.as_str()?;
-        if mode != "matrix" && mode != "breathe" && mode != "shimmer" { return None; }
+        if mode != "matrix" && mode != "breathe" && mode != "shimmer" && mode != "rotate" { return None; }
         let cycle_ms = value.get("cycleMs")?.as_f64()?;
         let delay_ms = value.get("delayMs").and_then(|v| v.as_f64()).unwrap_or(0.0);
         if !cycle_ms.is_finite() || cycle_ms < 100.0 || !delay_ms.is_finite() || delay_ms < 0.0 { return None; }
-        Some(gpui::PaintAnimation { cycle_ms, delay_ms, breathe: mode == "breathe", shimmer: mode == "shimmer", started: std::time::Instant::now() })
+        Some(gpui::PaintAnimation { cycle_ms, delay_ms, breathe: mode == "breathe", shimmer: mode == "shimmer", rotate: mode == "rotate", started: std::time::Instant::now() })
     });
     let color = style.and_then(|style| color(element, style)).unwrap_or_default();
     Tagged { child, id: element.id, kind, animation, color }.into_any_element()
