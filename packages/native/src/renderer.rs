@@ -1153,8 +1153,13 @@ impl GpuixRenderer {
     }
 
     fn request_invalidate(&self) -> Result<()> {
+        // Kybern patch: wake changed islands and notify the root, without
+        // window.refresh() (which disables every cache).
         #[cfg(target_os = "macos")]
-        return invalidate_window();
+        return update_window(|view, _window, cx| {
+            crate::cache_island::notify_changed_islands(view, cx);
+            cx.notify();
+        });
 
         #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
         return self.send_ui_command(UiCommand::Invalidate);
@@ -3674,7 +3679,9 @@ pub(crate) struct GpuixView {
     /// Live text selection, shared with the paint closures and the napi methods.
     pub(crate) selection: SharedSelection,
     /// Persistent measurement and scroll state for React-backed virtual lists.
-    virtual_lists: HashMap<u64, VirtualListEntry>,
+    pub(crate) virtual_lists: HashMap<u64, VirtualListEntry>,
+    /// Kybern patch: cached islands (`cache_island.rs`).
+    pub(crate) islands: crate::cache_island::Islands,
     /// Latest pointer sample and list during selection edge scrolling.
     selection_drag_position: Option<gpui::Point<gpui::Pixels>>,
     selection_scroll_list: Option<u64>,
@@ -3683,10 +3690,10 @@ pub(crate) struct GpuixView {
     pub(crate) clock: crate::automation::AutomationClock,
     /// Resolved `highlight` state, keyed by the element that declared it.
     /// Empty in every app that does not use search.
-    highlights: HashMap<u64, HighlightCacheEntry>,
+    pub(crate) highlights: HashMap<u64, HighlightCacheEntry>,
     /// What `onLayout` and `onScrollChange` last reported, for the elements that
     /// have the listener. Shared with the paint closures that compare against it.
-    paint_reports: SharedPaintReports,
+    pub(crate) paint_reports: SharedPaintReports,
 }
 
 #[derive(Default)]
@@ -3712,7 +3719,7 @@ pub(crate) type SharedPaintReports = Rc<RefCell<PaintReports>>;
 /// `highlight_cache_tests` at the bottom of this file compares `Arc` identity
 /// and fails if either level regresses. A timing budget does not catch it: on
 /// the 1000-turn chat the broken version is 2.7ms against 1.9ms.
-struct HighlightCacheEntry {
+pub(crate) struct HighlightCacheEntry {
     revision: u64,
     groups: Arc<crate::text::GroupList>,
     matcher_hash: u64,
@@ -3784,7 +3791,7 @@ fn sync_motion_states(
     (active, settled)
 }
 
-fn emit_highlight_events(callback: &Option<EventCallback>, events: &[(u64, usize)]) {
+pub(crate) fn emit_highlight_events(callback: &Option<EventCallback>, events: &[(u64, usize)]) {
     for &(id, total) in events {
         emit_event_full(callback, id, "highlight", |payload| {
             payload.match_count = Some(total as f64);
@@ -3981,6 +3988,7 @@ impl GpuixView {
             motion_states: HashMap::new(),
             selection,
             virtual_lists: HashMap::new(),
+            islands: Default::default(),
             selection_drag_position: None,
             selection_scroll_list: None,
             selection_scroll_task: None,
@@ -4225,6 +4233,9 @@ impl GpuixView {
             paint_reports: &self.paint_reports,
             highlight_events: &mut highlight_events,
             keyboard_focus,
+            island_root: None,
+            in_virtual_row: true,
+            islands: &mut self.islands,
         };
         let child = build_element(expected_child_id, &mut build_ctx, window, cx);
         emit_highlight_events(&callback, &highlight_events);
@@ -4338,7 +4349,7 @@ pub(crate) struct BuildCtx<'a> {
     pub focus_handles: &'a HashMap<u64, gpui::FocusHandle>,
     pub scroll_handles: &'a mut HashMap<u64, gpui::ScrollHandle>,
     pub custom_registry: &'a mut CustomElementRegistry,
-    virtual_lists: &'a mut HashMap<u64, VirtualListEntry>,
+    pub(crate) virtual_lists: &'a mut HashMap<u64, VirtualListEntry>,
     pub motion_states: &'a mut HashMap<u64, crate::motion::MotionState>,
     pub now: web_time::Instant,
     pub selection: SharedSelection,
@@ -4347,16 +4358,21 @@ pub(crate) struct BuildCtx<'a> {
     /// their own theme from their `theme` prop.
     pub inherited: Inherited,
     /// Persistent `highlight` caches, keyed by the declaring element.
-    highlights: &'a mut HashMap<u64, HighlightCacheEntry>,
-    paint_reports: &'a SharedPaintReports,
+    pub(crate) highlights: &'a mut HashMap<u64, HighlightCacheEntry>,
+    pub(crate) paint_reports: &'a SharedPaintReports,
     /// `onHighlight` payloads queued during the build.
     ///
     /// Never emitted inline: a handler that calls `setState` repaints, which
     /// would re-enter the build and emit again. They are flushed once the root
     /// build has returned.
-    highlight_events: &'a mut Vec<(u64, usize)>,
+    pub(crate) highlight_events: &'a mut Vec<(u64, usize)>,
     /// See `GpuixView::keyboard_focus_path`.
     pub keyboard_focus: Option<Arc<[u64]>>,
+    /// Kybern patch: the island this build renders, if any.
+    pub(crate) island_root: Option<u64>,
+    /// Kybern patch: building a `<virtual-list>` row (diagnostic inline override).
+    pub(crate) in_virtual_row: bool,
+    pub(crate) islands: &'a mut crate::cache_island::Islands,
 }
 
 /// Style properties that cascade into descendants.
@@ -4524,7 +4540,7 @@ impl VirtualListConfig {
     }
 }
 
-struct VirtualListEntry {
+pub(crate) struct VirtualListEntry {
     state: gpui::ListState,
     config: VirtualListConfig,
     window_start: usize,
@@ -4942,7 +4958,7 @@ impl GpuixView {
     /// input too, and dimming the window while someone types is noise. A mouse
     /// move or a focus change refreshes the window, so it is recomputed each
     /// frame.
-    fn keyboard_focus_path(
+    pub(crate) fn keyboard_focus_path(
         &self,
         tree: &RetainedTree,
         window: &gpui::Window,
@@ -5116,6 +5132,7 @@ impl gpui::Render for GpuixView {
             .retain(|id, _| tree.elements.contains_key(id));
         self.virtual_lists
             .retain(|id, _| tree.elements.contains_key(id));
+        self.islands.prune(&tree);
         // Pruned by listener, not existence: dropping `onLayout` and adding it
         // back reports the size again, like a fresh observer.
         {
@@ -5168,6 +5185,9 @@ impl gpui::Render for GpuixView {
                     paint_reports: &self.paint_reports,
                     highlight_events: &mut highlight_events,
                     keyboard_focus,
+                    island_root: None,
+                    in_virtual_row: false,
+                    islands: &mut self.islands,
                 };
                 build_element(root_id, &mut ctx, window, cx)
             }
@@ -5266,6 +5286,13 @@ pub(crate) fn build_element(
     let Some(element) = tree.elements.get(&id) else {
         return gpui::Empty.into_any_element();
     };
+
+    // Kybern patch: cached islands (`cache_island.rs`).
+    if crate::cache_island::is_island(element) {
+        if let Some(island) = crate::cache_island::island_element(id, element, ctx, window, cx) {
+            return island;
+        }
+    }
 
     let animated_style = if element.custom_props().contains_key("motion") {
         ctx.motion_states

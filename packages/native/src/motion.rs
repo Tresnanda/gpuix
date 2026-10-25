@@ -227,6 +227,11 @@ impl MotionState {
         Ok(())
     }
 
+    /// Kybern patch: true while the tween has not reached its target.
+    pub(crate) fn is_active(&self, now: Instant) -> bool {
+        self.valid && self.sample(now).1
+    }
+
     pub(crate) fn visible_style(&self, now: Instant) -> Option<MotionStyle> {
         self.valid.then(|| self.sample(now).0)
     }

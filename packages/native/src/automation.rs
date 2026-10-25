@@ -118,6 +118,13 @@ pub fn record_bounds(id: u64, bounds: Bounds<Pixels>) {
     });
 }
 
+/// Kybern patch: re-record a reused cached island's element bounds.
+pub fn insert_bounds(id: u64, bounds: ElementBounds) {
+    BOUNDS.with(|cell| {
+        cell.borrow_mut().insert(id, bounds);
+    });
+}
+
 pub fn get_bounds(id: u64) -> Option<ElementBounds> {
     BOUNDS.with(|cell| cell.borrow().get(&id).copied())
 }
