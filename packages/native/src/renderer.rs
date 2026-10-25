@@ -1981,6 +1981,16 @@ impl GpuixRenderer {
         update_window(|view, _, _| view.syntax_documents.lock().unwrap().stats())
     }
     #[napi]
+    pub fn set_input_decorations(&self, element_id: f64, decorations: serde_json::Value, expected_value: String) -> Result<()> {
+        let id = to_element_id(element_id)?;
+        update_window_without_view(move |_, cx| crate::custom_elements::input::set_input_decorations(id, decorations, expected_value, cx))?
+    }
+    #[napi]
+    pub fn hit_test_input_decoration(&self, element_id: f64, x: f64, y: f64) -> Result<Option<String>> {
+        let id = to_element_id(element_id)?;
+        update_window_without_view(move |_, cx| crate::custom_elements::input::hit_test_input_decoration(id, x, y, cx))?
+    }
+    #[napi]
     pub fn zoom_window(&self) -> Result<()> {
         #[cfg(target_os = "macos")]
         return update_window(|_view, window, _cx| window.zoom_window());

@@ -422,6 +422,7 @@ impl CustomElement for TextEditorElement {
                     blink_anchor: cx.background_executor().now(),
                     blink_task: None,
                     pending_values: VecDeque::new(),
+                    decorations: Vec::new(),
                     undo_stack: VecDeque::new(),
                     redo_stack: Vec::new(),
                     last_edit: None,
@@ -613,6 +614,7 @@ impl CustomElement for TextEditorElement {
 #[derive(Clone)]
 struct EditSnapshot {
     content: String,
+    decorations: Vec<InputDecoration>,
     selected_range: Range<usize>,
     selection_reversed: bool,
 }
@@ -703,6 +705,7 @@ struct TextEditorState {
     secure_subscriptions: Vec<gpui::Subscription>,
     focus_handle: FocusHandle,
     content: String,
+    decorations: Vec<InputDecoration>,
     placeholder: SharedString,
     multiline: bool,
     read_only: bool,
@@ -736,6 +739,7 @@ struct TextEditorState {
 }
 
 include!("../input_api.rs");
+include!("../input_decorations.rs");
 
 impl TextEditorState {
     fn update_secure_input(&mut self, window: &Window) {
@@ -771,6 +775,7 @@ impl TextEditorState {
     fn snapshot(&self) -> EditSnapshot {
         EditSnapshot {
             content: self.content.clone(),
+            decorations: self.decorations.clone(),
             selected_range: self.selected_range.clone(),
             selection_reversed: self.selection_reversed,
         }
@@ -793,6 +798,7 @@ impl TextEditorState {
         if self.content == value {
             return;
         }
+        self.decorations.clear();
         self.content = value;
         let end = self.content.len();
         self.selected_range = end..end;
@@ -829,6 +835,7 @@ impl TextEditorState {
     }
 
     fn restore(&mut self, snapshot: EditSnapshot, cx: &mut Context<Self>) {
+        self.decorations = snapshot.decorations;
         self.content = snapshot.content;
         self.selected_range = snapshot.selected_range;
         self.selection_reversed = snapshot.selection_reversed;
@@ -867,7 +874,7 @@ impl TextEditorState {
     }
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
-        let offset = offset.min(self.content.len());
+        let offset = self.snap_atom(offset.min(self.content.len()), offset >= self.cursor_offset());
         self.selected_range = offset..offset;
         self.selection_reversed = false;
         self.follow_cursor = true;
@@ -876,7 +883,7 @@ impl TextEditorState {
     }
 
     fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
-        let offset = offset.min(self.content.len());
+        let offset = self.snap_atom(offset.min(self.content.len()), offset >= self.cursor_offset());
         if self.selection_reversed {
             self.selected_range.start = offset;
         } else {
@@ -1501,6 +1508,7 @@ impl TextEditorState {
             .collect(),
             _ => vec![run(display.len(), false)],
         };
+        let runs = if !is_placeholder && !self.secure { self.decorated_runs(style, color) } else { runs };
         let wrap_width = self.multiline.then_some(width);
         let lines = window
             .text_system()
@@ -1615,6 +1623,7 @@ impl EntityInputHandler for TextEditorState {
             .map(|range| self.range_from_utf16(range))
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
+        let range = if self.marked_range.is_none() { self.expand_atoms(range) } else { range };
         let replacement = if self.multiline {
             new_text.to_string()
         } else {
@@ -1623,6 +1632,7 @@ impl EntityInputHandler for TextEditorState {
         if self.marked_range.is_none() {
             self.record_edit(&range, &replacement, cx.background_executor().now());
         }
+        self.rebase_decorations(&range, replacement.len());
         self.content =
             self.content[..range.start].to_owned() + &replacement + &self.content[range.end..];
         let cursor = range.start + replacement.len();
@@ -1657,11 +1667,13 @@ impl EntityInputHandler for TextEditorState {
             self.redo_stack.clear();
             self.last_edit = None;
         }
+        let range = if self.marked_range.is_none() { self.expand_atoms(range) } else { range };
         let replacement = if self.multiline {
             new_text.to_string()
         } else {
             single_line_text(new_text)
         };
+        self.rebase_decorations(&range, replacement.len());
         self.content =
             self.content[..range.start].to_owned() + &replacement + &self.content[range.end..];
         self.marked_range =
@@ -1956,6 +1968,7 @@ impl gpui::Element for EditorTextElement {
             }
         });
         window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
+            self.input.read(cx).paint_decoration_backgrounds(bounds, window);
             for quad in prepaint.selection.drain(..) {
                 window.paint_quad(quad);
             }
@@ -2262,6 +2275,7 @@ mod tests {
                 &mut history,
                 EditSnapshot {
                     content: index.to_string(),
+                    decorations: Vec::new(),
                     selected_range: index..index,
                     selection_reversed: false,
                 },
