@@ -4268,7 +4268,7 @@ impl GpuixView {
             window.request_animation_frame();
         }
         let Some(focus_handle) = row_focus_handle else {
-            return child;
+            return gpui::div().w_full().child(child).into_any_element();
         };
         gpui::div()
             .id(gpui::SharedString::from(format!(
