@@ -82,6 +82,8 @@ web-sys = { version = "0.3", features = ["Navigator", "Window"] }
 # macOS text/graphics deps - pinned to avoid core-graphics version conflicts
 # core-text 21.1.0 uses core-graphics 0.25 which conflicts with font-kit's core-graphics 0.24
 [target.'cfg(target_os = "macos")'.dependencies]
+mimalloc = { version = "=0.1.52", default-features = false }
+libmimalloc-sys = { version = "=0.1.49", default-features = false, features = ["extended"] }
 core-text = "=21.0.0"
 core-graphics = "=0.24.0"
 tar = "0.4"

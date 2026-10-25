@@ -1,9 +1,10 @@
 // Native Rust pixel/arena allocations are scoped VM mappings above 4 MiB.
 // Small allocations and platforms other than macOS retain System's behavior.
-use std::alloc::{GlobalAlloc, Layout, System};
+use std::alloc::{GlobalAlloc, Layout};
 
 const THRESHOLD: usize = 4 * 1024 * 1024;
 include!("code_alloc.rs");
+include!("code_small.rs");
 
 #[derive(Debug, Default)]
 pub(crate) struct Snapshot {
@@ -80,7 +81,7 @@ mod mapping {
             if mapped(layout) {
                 unsafe { allocate(layout) }
             } else {
-                unsafe { System.alloc(layout) }
+                unsafe { super::code_small::Small.alloc(layout) }
             }
         }
 
@@ -89,7 +90,7 @@ mod mapping {
             if mapped(layout) {
                 unsafe { allocate(layout) }
             } else {
-                unsafe { System.alloc_zeroed(layout) }
+                unsafe { super::code_small::Small.alloc_zeroed(layout) }
             }
         }
 
@@ -98,12 +99,13 @@ mod mapping {
             if mapped(layout) {
                 if unsafe { munmap(pointer.cast(), layout.size()) } == 0 {
                     CURRENT.fetch_sub(layout.size(), Relaxed);
+                    super::code_small::released_mapping(layout.size());
                     UNMAPS.fetch_add(1, Relaxed);
                 } else {
                     UNMAP_FAILURES.fetch_add(1, Relaxed);
                 }
             } else {
-                unsafe { System.dealloc(pointer, layout) }
+                unsafe { super::code_small::Small.dealloc(pointer, layout) }
             }
         }
 
@@ -111,8 +113,8 @@ mod mapping {
         unsafe fn realloc(&self, pointer: *mut u8, old: Layout, size: usize) -> *mut u8 {
             let new = unsafe { Layout::from_size_align_unchecked(size, old.align()) };
             if !mapped(old) && !mapped(new) {
-                // Preserve System's optimized realloc for the common small path.
-                return unsafe { System.realloc(pointer, old, size) };
+                // Preserve the selected small allocator's aligned realloc fast path.
+                return unsafe { super::code_small::Small.realloc(pointer, old, size) };
             }
             if old.size() == size {
                 return pointer;
@@ -145,6 +147,25 @@ mod mapping {
 #[cfg(target_os = "macos")]
 #[global_allocator]
 static ALLOCATOR: mapping::Allocator = mapping::Allocator;
+
+pub(crate) fn code_small_collect() {
+    #[cfg(target_os = "macos")]
+    code_small::collect_if_needed();
+}
+pub(crate) fn code_small_request() {
+    #[cfg(target_os = "macos")]
+    code_small::request();
+}
+pub(crate) fn code_small_after_frame(contracted: bool) {
+    #[cfg(target_os = "macos")]
+    code_small::after_frame(contracted);
+}
+pub(crate) fn code_small_stats() -> serde_json::Value {
+    #[cfg(target_os = "macos")]
+    { code_small::stats() }
+    #[cfg(not(target_os = "macos"))]
+    { serde_json::json!({"enabled":false}) }
+}
 
 pub(crate) fn snapshot() -> Snapshot {
     #[cfg(target_os = "macos")]
@@ -202,7 +223,7 @@ mod tests {
     }
 
     #[test]
-    fn small_and_overaligned_buffers_use_system() {
+    fn small_and_overaligned_buffers_use_the_selected_small_allocator() {
         let maps = snapshot().map_calls;
         for layout in [Layout::from_size_align(1024, 16).unwrap(), Layout::from_size_align(THRESHOLD, 65536).unwrap()] {
             unsafe {

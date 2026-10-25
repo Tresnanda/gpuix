@@ -1266,6 +1266,7 @@ impl GpuixRenderer {
         let app = gpui::Application::with_platform(platform.platform())
             .with_quit_mode(gpui::QuitMode::LastWindowClosed);
         let app_handle = app.run_embedded(move |cx: &mut gpui::App| {
+            gpui::set_code_memory_collector(crate::large_alloc::code_small_after_frame);
             crate::custom_elements::input::init(cx);
             crate::custom_elements::img::init(cx);
             // After the other bindings: `set_menus` reads key equivalents out of
@@ -1525,6 +1526,7 @@ impl GpuixRenderer {
             apply_batch_to_tree(&mut tree, json.as_bytes()).map_err(Error::from_reason)?;
         let dirty = tree.take_dirty();
         drop(tree);
+        if destroyed.len() >= 64 { crate::large_alloc::code_small_request(); }
         // A re-render that changed nothing sends a batch of identical resends.
         // Waking the window for it makes it rebuild and diff the whole element
         // tree to draw the frame it already has.
@@ -1554,6 +1556,7 @@ impl GpuixRenderer {
                     .map(|platform| platform.pump_events())
                     .unwrap_or(false)
             });
+            crate::large_alloc::code_small_collect();
             return Ok(running);
         }
 
@@ -1971,7 +1974,9 @@ impl GpuixRenderer {
     }
     #[napi]
     pub fn release_syntax_document(&self, id: String) -> Result<()> {
-        update_window(move |view, _, _| view.syntax_documents.lock().unwrap().release(&id))
+        let result = update_window(move |view, _, _| view.syntax_documents.lock().unwrap().release(&id));
+        crate::large_alloc::code_small_request();
+        result
     }
     #[napi]
     pub fn get_syntax_document_text(&self, id: String, revision: u32) -> Result<String> {
@@ -2179,7 +2184,9 @@ impl GpuixRenderer {
     }
     #[napi]
     pub fn release_markdown_document(&self, id: String) -> Result<()> {
-        update_window(move |view, _, _| view.markdown_documents.lock().unwrap().release(&id))
+        let result = update_window(move |view, _, _| view.markdown_documents.lock().unwrap().release(&id));
+        crate::large_alloc::code_small_request();
+        result
     }
     #[napi]
     pub fn get_markdown_document_text(&self, id: String, revision: u32) -> Result<String> {
@@ -2208,6 +2215,7 @@ impl GpuixRenderer {
             "images":crate::custom_elements::img::image_memory_stats(cx),
             "editorImages":crate::rich_editor::image_memory_stats(),
             "largeAllocations":crate::large_alloc::memory_stats(),
+            "smallAllocator":crate::large_alloc::code_small_stats(),
             "syntaxCache": ({
                 let cache = crate::syntax::cache::stats();
                 serde_json::json!({"documents":cache.documents,"retainedBytes":cache.retained_bytes,"hits":cache.hits,"misses":cache.misses})
