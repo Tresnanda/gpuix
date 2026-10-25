@@ -25,6 +25,7 @@ mod frame_clock;
 mod paint_replay;
 mod subtree_translation;
 mod subtree_transform;
+mod file_drag;
 mod backdrop;
 mod edge_fade;
 mod diff_style;

@@ -404,6 +404,7 @@ impl RetainedTree {
             crate::subtree_translation::forget(id);
             self.subtree_transform_updates.remove(&id);
             crate::subtree_transform::forget(id);
+            crate::file_drag::forget(id);
             self.focusable_ids.remove(&id);
             self.anchored_count -= usize::from(element.element_type == "anchored");
             destroyed.push(id);

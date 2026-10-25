@@ -5477,6 +5477,7 @@ impl gpui::Render for GpuixView {
         crate::subtree_translation::arm(self,window,cx);
         crate::subtree_transform::sync(&tree,self.clock.now());
         crate::subtree_transform::arm(self,window,cx);
+        crate::file_drag::sweep(window,cx);
         // Build the element tree. custom_registry, focus_handles, and scroll_handles
         // are different fields of self, so Rust allows borrowing all simultaneously.
         let theme = Theme::dark();
@@ -6208,6 +6209,9 @@ pub(crate) fn build_host_container(
             }
 
             // ── File drop (Finder / OS paths) ────────────────────
+            "fileDragChange" => {
+                el = crate::file_drag::attach(el, id, callback);
+            }
             "fileDrop" => {
                 el = el.on_drop(move |dropped: &gpui::ExternalPaths, window, _cx| {
                     emit_file_drop(&callback, id, dropped, window.mouse_position());
