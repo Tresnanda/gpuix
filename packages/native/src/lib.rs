@@ -22,6 +22,7 @@ mod key_intercept;
 mod close_guard;
 mod secure_input;
 mod code_wrap;
+mod syntax_document;
 mod spring;
 mod translate;
 mod color;

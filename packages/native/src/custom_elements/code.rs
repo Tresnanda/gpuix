@@ -58,6 +58,11 @@ pub struct CodeElement {
     path: Option<String>,
     show_line_numbers: bool,
     soft_wrap: bool,
+    document: Option<String>,
+    revision: u32,
+    start_line: usize,
+    end_line: Option<usize>,
+    document_lease: Option<Arc<crate::syntax_document::Document>>,
     theme: Theme,
     /// Cached highlight for the current `(code, language, path)`. The syntax
     /// cache already dedupes parsing, but this avoids hashing the source on
@@ -166,11 +171,20 @@ impl CustomElement for CodeElement {
 
         let theme = self.theme.clone();
         let m = &theme.metrics;
-        let highlight = self.resolve_highlight();
+        if let Some(id) = &self.document {
+            if self.document_lease.as_ref().map(|d| d.revision) != Some(self.revision) {
+                self.document_lease = crate::syntax_document::lookup(id, self.revision);
+            }
+        } else { self.document_lease = None; }
+        let document = self.document_lease.clone();
+        let highlight = if self.document.is_some() { document.as_ref().and_then(|d| d.highlight.clone()) } else { self.resolve_highlight() };
         let type_style = typography(ctx.style, &theme, m);
         let font = type_style.font();
-        let lines: Vec<&str> = self.code.split('\n').collect();
-        let gutter_width = gutter_width(lines.len(), m);
+        let lines: Vec<&str> = if self.document.is_some() { Vec::new() } else { self.code.split('\n').collect() };
+        let line_count = document.as_ref().map(|d| d.offsets.len()).unwrap_or(lines.len());
+        let start = self.start_line.min(line_count);
+        let end = self.end_line.unwrap_or(line_count).min(line_count).max(start);
+        let gutter_width = gutter_width(line_count, m);
 
         // overflow-x only works as a flex row viewport. A flex_col scroller
         // stretches nowrap rows to the viewport width, so a horizontal wheel
@@ -186,7 +200,8 @@ impl CustomElement for CodeElement {
             .whitespace_nowrap();
 
         content = crate::code_wrap::content(content, self.soft_wrap);
-        for (line_ix, line) in lines.iter().enumerate() {
+        for line_ix in start..end {
+            let line = document.as_ref().map(|d| d.line(line_ix)).unwrap_or_else(|| lines[line_ix]);
             let spans: Vec<(std::ops::Range<usize>, gpui::Hsla)> = highlight
                 .as_ref()
                 .and_then(|doc| doc.lines.get(line_ix))
@@ -224,7 +239,13 @@ impl CustomElement for CodeElement {
             // `sub` is the line index so each line owns a stable selection key
             // across frames. Using the element id alone would make every line
             // share one key and the wash would paint on all of them at once.
-            let text = ctx.text(line_ix, line.to_string(), Some(runs));
+            let text = if let Some(document) = &document {
+                crate::text::selectable_text(crate::text::SelectableText {
+                    selectable: ctx.selectable,
+                    highlight: ctx.highlight_set.clone().map(crate::text::HighlightSource::Native),
+                    ..crate::text::SelectableText::new(document.selection_id, line_ix, line.to_string().into(), Some(runs), ctx.selection.clone(), ctx.selection_wash)
+                })
+            } else { ctx.text(line_ix, line.to_string(), Some(runs)) };
             content = content.child(row.child(if self.soft_wrap {
                 gpui::div().flex_1().min_w_0().child(text).into_any_element()
             } else { text.into_any_element() }));
@@ -254,6 +275,10 @@ impl CustomElement for CodeElement {
             "code" => self.code = value.as_str().unwrap_or("").replace("\r\n", "\n"),
             "language" => self.language = value.as_str().map(str::to_string),
             "path" => self.path = value.as_str().map(str::to_string),
+            "document" => { self.document = value.as_str().map(str::to_owned); self.document_lease = None; },
+            "revision" => self.revision = value.as_u64().unwrap_or(0) as u32,
+            "startLine" => self.start_line = value.as_u64().unwrap_or(0) as usize,
+            "endLine" => self.end_line = value.as_u64().map(|v| v as usize),
             "softWrap" => self.soft_wrap = value.as_bool().unwrap_or(false),
             "showLineNumbers" => self.show_line_numbers = value.as_bool().unwrap_or(false),
             "theme" => self.theme = Theme::from_prop(Some(&value)),
@@ -262,14 +287,14 @@ impl CustomElement for CodeElement {
     }
 
     fn supported_props(&self) -> &'static [&'static str] {
-        &["code", "language", "path", "showLineNumbers", "softWrap", "theme"]
+        &["code", "language", "path", "showLineNumbers", "softWrap", "document", "revision", "startLine", "endLine", "theme"]
     }
 
     fn supported_events(&self) -> &'static [&'static str] {
         &["click", "mouseEnter", "mouseLeave", "fileDrop"]
     }
 
-    fn destroy(&mut self) {}
+    fn destroy(&mut self) { self.document_lease = None; }
 }
 
 /// Line-number gutter width, sized analytically from the digit count so the

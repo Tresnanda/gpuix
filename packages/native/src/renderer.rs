@@ -1956,6 +1956,28 @@ impl GpuixRenderer {
         update_window(move |view, _, _| view.layout_observers.borrow().contains(token))
     }
     #[napi]
+    pub fn create_syntax_document(&self, options: serde_json::Value) -> Result<napi::bindgen_prelude::AsyncTask<crate::syntax_document::ParseTask>> {
+        let registry = update_window(|view, _, _| view.syntax_documents.clone())?;
+        Ok(napi::bindgen_prelude::AsyncTask::new(crate::syntax_document::Registry::prepare(registry, None, options)?))
+    }
+    #[napi]
+    pub fn update_syntax_document(&self, id: String, options: serde_json::Value) -> Result<napi::bindgen_prelude::AsyncTask<crate::syntax_document::ParseTask>> {
+        let registry = update_window(|view, _, _| view.syntax_documents.clone())?;
+        Ok(napi::bindgen_prelude::AsyncTask::new(crate::syntax_document::Registry::prepare(registry, Some(id), options)?))
+    }
+    #[napi]
+    pub fn release_syntax_document(&self, id: String) -> Result<()> {
+        update_window(move |view, _, _| view.syntax_documents.lock().unwrap().release(&id))
+    }
+    #[napi]
+    pub fn get_syntax_document_text(&self, id: String, revision: u32) -> Result<String> {
+        update_window(move |view, _, _| view.syntax_documents.lock().unwrap().source(&id, revision))?
+    }
+    #[napi]
+    pub fn get_syntax_document_stats(&self) -> Result<serde_json::Value> {
+        update_window(|view, _, _| view.syntax_documents.lock().unwrap().stats())
+    }
+    #[napi]
     pub fn zoom_window(&self) -> Result<()> {
         #[cfg(target_os = "macos")]
         return update_window(|_view, window, _cx| window.zoom_window());
@@ -3775,6 +3797,7 @@ pub(crate) struct GpuixView {
     /// Kybern patch: cached islands (`cache_island.rs`).
     pub(crate) islands: crate::cache_island::Islands,
     layout_observers: crate::layout_observer::Shared,
+    syntax_documents: crate::syntax_document::Shared,
     /// Latest pointer sample and list during selection edge scrolling.
     selection_drag_position: Option<gpui::Point<gpui::Pixels>>,
     selection_scroll_list: Option<u64>,
@@ -4083,6 +4106,7 @@ impl GpuixView {
             virtual_lists: HashMap::new(),
             islands: Default::default(),
             layout_observers: Default::default(),
+            syntax_documents: Default::default(),
             selection_drag_position: None,
             selection_scroll_list: None,
             selection_scroll_task: None,
@@ -5192,6 +5216,12 @@ impl PendingFocus {
     }
 }
 
+impl Drop for GpuixView {
+    fn drop(&mut self) {
+        self.syntax_documents.lock().unwrap().close();
+        self.layout_observers.borrow_mut().close();
+    }
+}
 impl gpui::Render for GpuixView {
     fn render(
         &mut self,
@@ -5200,6 +5230,7 @@ impl gpui::Render for GpuixView {
     ) -> impl gpui::IntoElement {
         use gpui::IntoElement;
 
+        crate::syntax_document::activate(&self.syntax_documents);
         window.set_window_title(&self.window_title);
 
         #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
