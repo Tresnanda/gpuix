@@ -6030,7 +6030,7 @@ pub(crate) fn build_host_container(
     // unique per renderer, and every `<div>` and `<text>` builds one of these on
     // every frame, so the string allocation was pure overhead. Custom elements
     // use `ElementId::Name`, which is a different variant and cannot collide.
-    let mut el = gpui::div().id(gpui::ElementId::Integer(element.id));
+    let mut el = gpui::div().id(gpui::ElementId::Integer(element.id)).hover_owner(cx.entity_id(), element.id);
 
     if let Some(style) = style {
         el = apply_interactive_styles(el, style);
@@ -6273,14 +6273,19 @@ pub(crate) fn build_host_container(
                     } else {
                         None
                     };
-                    el = el.on_hover(move |&is_hovered, _window, _cx| {
+                    el = el.on_hover(move |&is_hovered, window, _cx| {
+                        let (x, y) = point_to_xy(window.mouse_position());
                         if is_hovered {
                             emit_event_full(&callback_enter, id, "mouseEnter", |p| {
                                 p.hovered = Some(true);
+                                p.x = Some(x);
+                                p.y = Some(y);
                             });
                         } else {
                             emit_event_full(&callback_leave, id, "mouseLeave", |p| {
                                 p.hovered = Some(false);
+                                p.x = Some(x);
+                                p.y = Some(y);
                             });
                         }
                     });
