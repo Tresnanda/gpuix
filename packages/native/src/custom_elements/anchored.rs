@@ -353,7 +353,7 @@ impl CustomElement for AnchoredElement {
             }
         }
 
-        let anchored = anchored.child(crate::backdrop::apply(content.into_any_element(), ctx.props.get("backdrop"), ctx.style.and_then(|s|s.opacity).unwrap_or(1.0) as f32));
+        let anchored = anchored.child(crate::backdrop::apply(content.into_any_element(), ctx.props.get("backdrop"), ctx.style.and_then(|s|s.opacity).unwrap_or(1.0) as f32, ctx.style));
         let layer = if self.deferred {
             gpui::deferred(anchored)
                 .with_priority(self.priority)

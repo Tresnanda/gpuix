@@ -19,13 +19,14 @@ use gpui::{
 };
 use web_time::Instant;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct ElementBounds {
     pub x: f64,
     pub y: f64,
     pub width: f64,
     pub height: f64,
     pub clip: Option<[f64; 4]>,
+    pub rounded_clips: Option<std::sync::Arc<Vec<[f32;8]>>>,
 }
 
 impl ElementBounds {
@@ -35,7 +36,7 @@ impl ElementBounds {
             y: f64::from(f32::from(bounds.origin.y)),
             width: f64::from(f32::from(bounds.size.width)),
             height: f64::from(f32::from(bounds.size.height)),
-            clip: None,
+            clip: None, rounded_clips: None,
         }
     }
 }
@@ -118,6 +119,7 @@ fn record_clipped_bounds(id: u64, bounds: Bounds<Pixels>, window: &Window) {
     SUBTREE_BOUNDS.with(|map| {let mut map=map.borrow_mut(); if let Some(geometry)=window.subtree_geometry(){map.insert(id,geometry);}else{map.remove(&id);}});
     let clipped = bounds.intersect(&window.content_mask().bounds).intersect(&Bounds { origin: point(px(0.), px(0.)), size: window.viewport_size() });
     let mut value = ElementBounds::from_gpui(bounds);
+    value.rounded_clips = window.rounded_content_masks();
     if clipped.size.width > px(0.) && clipped.size.height > px(0.) {
         let b = ElementBounds::from_gpui(clipped);
         value.clip = Some([b.x, b.y, b.width, b.height]);
@@ -139,7 +141,7 @@ pub fn insert_bounds(id: u64, bounds: ElementBounds) {
 }
 
 pub fn get_bounds(id: u64) -> Option<ElementBounds> {
-    BOUNDS.with(|cell| cell.borrow().get(&id).copied())
+    BOUNDS.with(|cell| cell.borrow().get(&id).cloned())
 }
 
 pub fn all_bounds() -> HashMap<u64, ElementBounds> {

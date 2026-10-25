@@ -5579,7 +5579,7 @@ pub(crate) fn build_element(
         }
     };
 
-    let built = if element.element_type == "anchored" { built } else { crate::backdrop::apply(built, element.custom_props().get("backdrop"), style.and_then(|s|s.opacity).unwrap_or(1.0) as f32) };
+    let built = if element.element_type == "anchored" { built } else { crate::backdrop::apply(built, element.custom_props().get("backdrop"), style.and_then(|s|s.opacity).unwrap_or(1.0) as f32, style) };
     let built = crate::edge_fade::apply(built, element.custom_props().get("edgeFade"));
     let built = crate::paint_replay::apply(built, element, style);
     let built = if ctx.island_root != Some(id) {crate::subtree_translation::apply(built,id,ctx.tree,ctx.now)} else {built};
@@ -5823,7 +5823,7 @@ pub(crate) fn build_host_container(
             el = if style.pointer_events.as_deref() == Some("auto") {
                 el.occlude()
             } else {
-                el.block_mouse_except_scroll()
+                el.block_non_ancestor_mouse()
             };
         }
     }
