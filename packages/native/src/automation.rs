@@ -25,6 +25,7 @@ pub struct ElementBounds {
     pub y: f64,
     pub width: f64,
     pub height: f64,
+    pub clip: Option<[f64; 4]>,
 }
 
 impl ElementBounds {
@@ -34,6 +35,7 @@ impl ElementBounds {
             y: f64::from(f32::from(bounds.origin.y)),
             width: f64::from(f32::from(bounds.size.width)),
             height: f64::from(f32::from(bounds.size.height)),
+            clip: None,
         }
     }
 }
@@ -67,7 +69,7 @@ pub fn bounds_frame_reset() -> impl IntoElement {
 /// move the layout box: the wrapper would become the flex item and the image
 /// would lose intrinsic sizing and corner clipping.
 pub fn track_own_bounds<E: gpui::InteractiveElement>(el: E, id: u64) -> E {
-    el.on_painted(move |bounds, _, _| record_bounds(id, bounds))
+    el.on_painted(move |bounds, window, _| record_clipped_bounds(id, bounds, window))
 }
 
 /// Record a host element's painted box, and its selection-start region, for
@@ -96,8 +98,8 @@ pub fn track_host_bounds<E>(
 where
     E: gpui::InteractiveElement,
 {
-    el.on_painted(move |bounds, _, cx| {
-        record_bounds(id, bounds);
+    el.on_painted(move |bounds, window, cx| {
+        record_clipped_bounds(id, bounds, window);
         if let Some(selectable) = selection_start {
             crate::text::record_start_region(bounds, selectable);
         }
@@ -111,6 +113,15 @@ where
 /// is how `onLayout` and `onScrollChange` see what the frame produced.
 pub type PaintReporter = Rc<dyn Fn(Bounds<Pixels>, &mut App)>;
 
+fn record_clipped_bounds(id: u64, bounds: Bounds<Pixels>, window: &Window) {
+    let clipped = bounds.intersect(&window.content_mask().bounds).intersect(&Bounds { origin: point(px(0.), px(0.)), size: window.viewport_size() });
+    let mut value = ElementBounds::from_gpui(bounds);
+    if clipped.size.width > px(0.) && clipped.size.height > px(0.) {
+        let b = ElementBounds::from_gpui(clipped);
+        value.clip = Some([b.x, b.y, b.width, b.height]);
+    }
+    BOUNDS.with(|cell| { cell.borrow_mut().insert(id, value); });
+}
 pub fn record_bounds(id: u64, bounds: Bounds<Pixels>) {
     BOUNDS.with(|cell| {
         cell.borrow_mut()
@@ -136,8 +147,8 @@ pub fn all_bounds() -> HashMap<u64, ElementBounds> {
 pub fn bounds_tracker(id: u64, selection_start: Option<bool>) -> impl IntoElement {
     canvas(
         |bounds, _, _| bounds,
-        move |bounds, _, _, _| {
-            record_bounds(id, bounds);
+        move |bounds, _, window, _| {
+            record_clipped_bounds(id, bounds, window);
             if let Some(selectable) = selection_start {
                 crate::text::record_start_region(bounds, selectable);
             }

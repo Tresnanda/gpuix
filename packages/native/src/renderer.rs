@@ -1940,6 +1940,22 @@ impl GpuixRenderer {
     }
 
     #[napi]
+    pub fn add_layout_observer(&self, target: serde_json::Value, callback: ThreadsafeFunction<serde_json::Value>) -> Result<u32> {
+        update_window(move |view, _, cx| {
+            let token = view.layout_observers.borrow_mut().add(target, callback, &view.tree.lock().unwrap())?;
+            cx.notify();
+            Ok(token)
+        })?
+    }
+    #[napi]
+    pub fn remove_layout_observer(&self, token: u32) -> Result<()> {
+        update_window(move |view, _, _| view.layout_observers.borrow_mut().remove(token))
+    }
+    #[napi]
+    pub fn is_layout_observer_active(&self, token: u32) -> Result<bool> {
+        update_window(move |view, _, _| view.layout_observers.borrow().contains(token))
+    }
+    #[napi]
     pub fn zoom_window(&self) -> Result<()> {
         #[cfg(target_os = "macos")]
         return update_window(|_view, window, _cx| window.zoom_window());
@@ -3758,6 +3774,7 @@ pub(crate) struct GpuixView {
     pub(crate) virtual_lists: HashMap<u64, VirtualListEntry>,
     /// Kybern patch: cached islands (`cache_island.rs`).
     pub(crate) islands: crate::cache_island::Islands,
+    layout_observers: crate::layout_observer::Shared,
     /// Latest pointer sample and list during selection edge scrolling.
     selection_drag_position: Option<gpui::Point<gpui::Pixels>>,
     selection_scroll_list: Option<u64>,
@@ -4065,6 +4082,7 @@ impl GpuixView {
             selection,
             virtual_lists: HashMap::new(),
             islands: Default::default(),
+            layout_observers: Default::default(),
             selection_drag_position: None,
             selection_scroll_list: None,
             selection_scroll_task: None,
@@ -5313,6 +5331,7 @@ impl gpui::Render for GpuixView {
                         });
                     },
                 ))
+                .child(crate::layout_observer::after_paint(self.layout_observers.clone(), self.tree.clone()))
                 .child(crate::automation::bounds_frame_reset())
                 .child(result)
                 .into_any_element()
