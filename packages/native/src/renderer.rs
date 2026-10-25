@@ -376,6 +376,47 @@ fn update_window_without_view<R>(
     })
 }
 
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
+static UI_BRIDGE: std::sync::Mutex<Option<mpsc::UnboundedSender<UiCommand>>> = std::sync::Mutex::new(None);
+
+/// Kybern: run `job` on the GPUI UI thread and wait for its result.
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
+fn run_on_ui_thread<R: Send + 'static>(
+    job: impl FnOnce(gpui::WindowHandle<GpuixView>, &mut gpui::AsyncApp) -> anyhow::Result<R> + Send + 'static,
+) -> Result<R> {
+    if std::thread::current().name() == Some("gpuix-ui") {
+        return Err(Error::from_reason("A window update was requested from the GPUI UI thread itself"));
+    }
+    let sender = UI_BRIDGE
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| Error::from_reason("GPUI application is not initialized"))?;
+    let (response, receiver) = sync_channel(1);
+    sender
+        .unbounded_send(UiCommand::Run(Box::new(move |window, cx| {
+            response.send(job(window, cx).map_err(|error| error.to_string())).ok();
+        })))
+        .map_err(|_| Error::from_reason("The GPUI UI thread is not running"))?;
+    recv_ui_response(receiver, "a window update")?.map_err(Error::from_reason)
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
+fn update_window<R: Send + 'static>(
+    update: impl FnOnce(&mut GpuixView, &mut gpui::Window, &mut gpui::Context<GpuixView>) -> R + Send + 'static,
+) -> Result<R> {
+    run_on_ui_thread(move |window, cx| window.update(cx, update))
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
+fn update_window_without_view<R: Send + 'static>(
+    update: impl FnOnce(&mut gpui::Window, &mut gpui::App) -> R + Send + 'static,
+) -> Result<R> {
+    run_on_ui_thread(move |window, cx| {
+        gpui::AnyWindowHandle::from(window).update(cx, move |_view, window, cx| update(window, cx))
+    })
+}
+
 #[cfg(target_os = "macos")]
 fn invalidate_window() -> Result<()> {
     update_window(|view, window, cx| {
@@ -437,6 +478,8 @@ enum ClockControl {
 
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
 enum UiCommand {
+    /// Kybern: one window update from a hook, run on the UI thread.
+    Run(Box<dyn FnOnce(gpui::WindowHandle<GpuixView>, &mut gpui::AsyncApp) + Send>),
     Invalidate,
     ActivateWindow,
     MinimizeWindow,
@@ -562,6 +605,10 @@ async fn run_ui_commands(
 ) {
     while let Some(command) = commands.next().await {
         let result = match command {
+            UiCommand::Run(job) => {
+                job(window, cx);
+                Ok(())
+            }
             UiCommand::Invalidate => refresh_ui_window(window, cx),
             UiCommand::ActivateWindow => window.update(cx, |_view, window, cx| {
                 cx.activate(true);
@@ -1113,7 +1160,7 @@ impl GpuixRenderer {
         {
             let bounds = self.automation_bounds()?;
             let tree = self.tree.lock().unwrap();
-            return Ok(tree.elements_at(x, y, &|id| bounds.get(&id).copied()));
+            return Ok(tree.elements_at(x, y, &|id| bounds.get(&id).cloned()));
         }
 
         #[cfg(not(any(
@@ -1494,6 +1541,7 @@ impl GpuixRenderer {
             .map_err(|_| Error::from_reason("The GPUI UI thread stopped during initialization"))?
             .map_err(Error::from_reason)?;
 
+        *UI_BRIDGE.lock().unwrap() = Some(command_sender.clone());
         *self.ui_commands.lock().unwrap() = Some(command_sender);
         TERMINAL_MODE.store(terminal, std::sync::atomic::Ordering::Release);
         *self.initialized.lock().unwrap() = true;
@@ -1874,35 +1922,23 @@ impl GpuixRenderer {
     /// Run the native zoom or maximize operation.
     #[napi]
     pub fn resolve_key_event(&self, token: u32, prevented: bool) -> Result<()> {
-        #[cfg(target_os = "macos")]
         return update_window_without_view(move |window, cx| crate::key_intercept::resolve(token, prevented, window, cx));
-        #[cfg(not(target_os = "macos"))]
-        Err(Error::from_reason("Key interception is currently macOS-only"))
     }
 
     #[napi]
     pub fn set_close_guard(&self, enabled: bool) -> Result<()> {
-        #[cfg(target_os = "macos")]
         return update_window(move |view, window, cx| crate::close_guard::install(if enabled { view.event_callback.clone() } else { None }, window, cx));
-        #[cfg(not(target_os = "macos"))]
-        Err(Error::from_reason("Close guards are currently macOS-only"))
     }
 
     #[napi]
     pub fn resolve_close_request(&self, token: u32, allow: bool) -> Result<()> {
-        #[cfg(target_os = "macos")]
         return update_window_without_view(move |window, _cx| crate::close_guard::resolve(token, allow, window));
-        #[cfg(not(target_os = "macos"))]
-        Err(Error::from_reason("Close guards are currently macOS-only"))
     }
 
     #[napi]
     pub fn get_input_selection(&self, element_id: f64) -> Result<serde_json::Value> {
         let id = to_element_id(element_id)?;
-        #[cfg(target_os = "macos")]
         return update_window_without_view(move |_, cx| crate::custom_elements::input::input_selection(id, cx))?;
-        #[cfg(not(target_os = "macos"))]
-        Err(Error::from_reason("Input selection is currently macOS-only"))
     }
 
     #[napi]
@@ -1910,19 +1946,13 @@ impl GpuixRenderer {
         let id = to_element_id(element_id)?;
         let start = crate::custom_elements::input::utf16_offset(start)?;
         let end = crate::custom_elements::input::utf16_offset(end)?;
-        #[cfg(target_os = "macos")]
         return update_window_without_view(move |_, cx| crate::custom_elements::input::select_input(id, start, end, reversed, cx))?;
-        #[cfg(not(target_os = "macos"))]
-        Err(Error::from_reason("Input selection is currently macOS-only"))
     }
 
     #[napi]
     pub fn edit_input(&self, element_id: f64, edit: serde_json::Value) -> Result<()> {
         let id = to_element_id(element_id)?;
-        #[cfg(target_os = "macos")]
         return update_window_without_view(move |window, cx| crate::custom_elements::input::edit_input(id, edit, window, cx))?;
-        #[cfg(not(target_os = "macos"))]
-        Err(Error::from_reason("Input transactions are currently macOS-only"))
     }
 
     #[napi]
@@ -1938,14 +1968,11 @@ impl GpuixRenderer {
         let sub = crate::custom_elements::input::utf16_offset(sub)?;
         let start = crate::custom_elements::input::utf16_offset(start)?;
         let end = crate::custom_elements::input::utf16_offset(end)?;
-        #[cfg(target_os = "macos")]
         return update_window_without_view(move |window, _cx| {
             crate::text::paint::select_text(&selection, &tree.lock().unwrap(), id, sub, start, end)?;
             window.refresh();
             Ok(())
         })?;
-        #[cfg(not(target_os = "macos"))]
-        Err(Error::from_reason("Text selection is currently macOS-only"))
     }
 
     #[napi]
@@ -2095,10 +2122,7 @@ impl GpuixRenderer {
     #[napi]
     pub fn set_window_background(&self, mode: String) -> Result<()> {
         let appearance = crate::window_platform::background(&mode)?;
-        #[cfg(target_os = "macos")]
         return update_window_without_view(move |window, _cx| window.set_background_appearance(appearance));
-        #[cfg(not(target_os = "macos"))]
-        { let _ = appearance; Err(Error::from_reason("Runtime window backgrounds are currently macOS-only")) }
     }
 
     /// The system title-bar double-click action (zoom, minimize or nothing, per System Settings).
@@ -2144,34 +2168,42 @@ impl GpuixRenderer {
                 Err(error) => deferred.reject(error),
             }
         }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = (directory, suggested_name);
-            deferred.reject(Error::from_reason("The save panel is currently macOS-only"));
-        }
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
+        run_on_ui_thread(move |_window, cx| {
+            let executor = cx.background_executor().clone();
+            let receiver = cx.update(|cx| cx.prompt_for_new_path(std::path::Path::new(&directory), suggested_name.as_deref()));
+            executor
+                .spawn(async move {
+                    let result = receiver
+                        .await
+                        .map_err(|_| Error::from_reason("The save panel closed without a result"))
+                        .and_then(|result| path_prompt_result(result.map(|path| path.map(|path| vec![path]))));
+                    match result {
+                        Ok(paths) => deferred.resolve(Box::new(move |_env| Ok(paths))),
+                        Err(error) => deferred.reject(error),
+                    }
+                })
+                .detach();
+            Ok(())
+        })?;
+
         Ok(promise)
     }
 
     #[napi]
     pub fn rich_editor_command(&self, element_id: f64, command: serde_json::Value) -> Result<serde_json::Value> {
         let id = to_element_id(element_id)?;
-        #[cfg(target_os = "macos")]
         return update_window_without_view(move |window, cx| crate::rich_editor::command(id, command, window, cx))?;
-        #[cfg(not(target_os = "macos"))]
-        Err(Error::from_reason("The rich editor is currently macOS-only"))
     }
 
     #[napi]
     pub fn set_rich_editor_image(&self, src: String, bytes: Buffer) -> Result<()> {
         let bytes = bytes.to_vec();
-        #[cfg(target_os = "macos")]
         return update_window_without_view(move |window, cx| {
             let result = crate::rich_editor::set_image(src, bytes, cx);
             crate::rich_editor::trim_images(window, cx);
             result
         })?;
-        #[cfg(not(target_os = "macos"))]
-        Err(Error::from_reason("The rich editor is currently macOS-only"))
     }
 
     #[napi]
@@ -2204,15 +2236,11 @@ impl GpuixRenderer {
     }
     #[napi]
     pub fn has_rich_editor_image(&self, src: String) -> Result<bool> {
-        #[cfg(target_os = "macos")]
         return update_window_without_view(move |_, _| Ok(crate::rich_editor::has_image(&src)))?;
-        #[cfg(not(target_os = "macos"))]
-        Err(Error::from_reason("The rich editor is currently macOS-only"))
     }
 
     #[napi]
     pub fn get_memory_stats(&self) -> Result<serde_json::Value> {
-        #[cfg(target_os = "macos")]
         return update_window_without_view(move |window, cx| Ok(serde_json::json!({
             "images":crate::custom_elements::img::image_memory_stats(cx),
             "editorImages":crate::rich_editor::image_memory_stats(),
@@ -2231,8 +2259,6 @@ impl GpuixRenderer {
             "elementArenaBytes":window.element_arena_memory_bytes(),
             "layoutNodeHighWater":window.layout_memory_peak_nodes(),
         })))?;
-        #[cfg(not(target_os = "macos"))]
-        Err(Error::from_reason("Memory counters are currently macOS-only"))
     }
 
     #[napi]
@@ -2902,6 +2928,10 @@ impl GpuixRenderer {
 
     #[napi]
     pub fn get_painted_text(&self) -> Vec<String> {
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
+        if let Ok(text) = run_on_ui_thread(|_, _| Ok(crate::text::painted_text())) {
+            return text;
+        }
         crate::text::painted_text()
     }
 
@@ -2911,6 +2941,10 @@ impl GpuixRenderer {
     /// assert on `highlight` without a screenshot.
     #[napi]
     pub fn get_painted_highlights(&self) -> Vec<crate::element_tree::HighlightMatch> {
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
+        if let Ok(highlights) = run_on_ui_thread(|_, _| Ok(crate::text::painted_highlights())) {
+            return highlights.into_iter().map(Into::into).collect();
+        }
         crate::text::painted_highlights()
             .into_iter()
             .map(Into::into)
