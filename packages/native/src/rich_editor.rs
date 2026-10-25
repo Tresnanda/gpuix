@@ -1091,7 +1091,7 @@ struct Lay {
     text_h: f32,
     /// Box height for atom blocks (images, rules).
     atom_h: f32,
-    image: Option<Arc<gpui::RenderImage>>,
+    image: Option<EditorLayoutImage>,
     image_size: (f32, f32),
     image_failed: bool,
 }
@@ -1347,7 +1347,7 @@ impl RichEditorState {
                     let scale = (width / iw.max(1.0)).min(max_h / ih.max(1.0)).min(1.0);
                     image_size = (iw * scale, ih * scale);
                     atom_h = image_size.1;
-                    image = Some(img);
+                    image = Some(EditorLayoutImage::new(&img));
                 }
                 Some(Err(())) => {
                     image_failed = true;
@@ -2980,11 +2980,11 @@ fn paint_doc(editor: &mut RichEditorState, bounds: Bounds<Pixels>, caret_on: boo
                 let selected = !sel.is_empty() && sel.start() <= Pos::new(index, 0) && sel.end() >= Pos::new(index, ATOM_LEN);
                 let (w, h) = lay.image_size;
                 let b = Bounds::new(origin + point(px(place.tx), px(place.top)), size(px(w), px(h)));
-                if let Some(image) = &lay.image {
+                if let Some(image) = lay.image.as_ref().and_then(EditorLayoutImage::get) {
                     let ring = if selected { 2.0 } else { 1.0 };
                     let ring_color = if selected { theme.focus } else { theme.hair };
                     window.paint_quad(quad(b.dilate(px(ring)), ring_color, 8.0 + ring));
-                    let _ = window.paint_image(b, b, Corners::all(px(8.0)), image.clone(), 0, false);
+                    let _ = window.paint_image(b, b, Corners::all(px(8.0)), image, 0, false);
                 } else {
                     window.paint_quad(quad(b, theme.hover, 8.0));
                     window.paint_quad(gpui::outline(b, theme.hair, gpui::BorderStyle::Solid).corner_radii(px(8.0)));
@@ -3528,7 +3528,7 @@ pub(crate) fn has_image(src: &str) -> bool {
 pub(crate) fn image_memory_stats() -> serde_json::Value {
     IMAGES.with(|cache| {
         let cache = cache.borrow();
-        serde_json::json!({"entries":cache.0.len(),"cpuAndGpuPixelBytesEstimate":cache.0.iter().map(|(src,entry)| editor_image_cost(src,entry)).sum::<usize>()})
+        serde_json::json!({"entries":cache.0.len(),"layoutImagesRetainPixels":!editor_layout_image_memory_enabled(),"cacheStrongReferences":cache.0.values().map(|entry| match entry { ImageEntry::Ready(image) => Arc::strong_count(image), ImageEntry::Failed => 0 }).sum::<usize>(),"cpuAndGpuPixelBytesEstimate":cache.0.iter().map(|(src,entry)| editor_image_cost(src,entry)).sum::<usize>()})
     })
 }
 pub(crate) fn trim_images(window: &mut Window, cx: &mut App) {
@@ -3554,3 +3554,5 @@ pub(crate) fn trim_images(window: &mut Window, cx: &mut App) {
     });
     drain_image_drops(window);
 }
+
+include!("image_owner.rs");
