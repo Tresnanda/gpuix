@@ -3263,7 +3263,7 @@ impl GpuixRenderer {
         {
             let image = update_window_without_view(move |window, cx| {
                 window.refresh();
-                window.kybern_prepare_snapshot(cx);
+                window.kybern_prepare_image_snapshot(cx);
                 window.render_to_image()
             })?
             .map_err(|e| Error::from_reason(format!("Screenshot capture failed: {}", e)))?;
