@@ -444,6 +444,7 @@ impl CustomElement for TextEditorElement {
                 }
             }));
         }
+        remember_editor(ctx.id, &state);
         let prop_changed = self.last_prop_value.as_ref() != Some(&self.value);
         state.update(cx, |state, cx| {
             state.callback = callback;
@@ -733,6 +734,8 @@ struct TextEditorState {
     redo_stack: Vec<EditSnapshot>,
     last_edit: Option<LastEdit>,
 }
+
+include!("../input_api.rs");
 
 impl TextEditorState {
     fn update_secure_input(&mut self, window: &Window) {

@@ -1888,6 +1888,58 @@ impl GpuixRenderer {
     }
 
     #[napi]
+    pub fn get_input_selection(&self, element_id: f64) -> Result<serde_json::Value> {
+        let id = to_element_id(element_id)?;
+        #[cfg(target_os = "macos")]
+        return update_window_without_view(move |_, cx| crate::custom_elements::input::input_selection(id, cx))?;
+        #[cfg(not(target_os = "macos"))]
+        Err(Error::from_reason("Input selection is currently macOS-only"))
+    }
+
+    #[napi]
+    pub fn set_input_selection(&self, element_id: f64, start: f64, end: f64, reversed: bool) -> Result<()> {
+        let id = to_element_id(element_id)?;
+        let start = crate::custom_elements::input::utf16_offset(start)?;
+        let end = crate::custom_elements::input::utf16_offset(end)?;
+        #[cfg(target_os = "macos")]
+        return update_window_without_view(move |_, cx| crate::custom_elements::input::select_input(id, start, end, reversed, cx))?;
+        #[cfg(not(target_os = "macos"))]
+        Err(Error::from_reason("Input selection is currently macOS-only"))
+    }
+
+    #[napi]
+    pub fn edit_input(&self, element_id: f64, edit: serde_json::Value) -> Result<()> {
+        let id = to_element_id(element_id)?;
+        #[cfg(target_os = "macos")]
+        return update_window_without_view(move |window, cx| crate::custom_elements::input::edit_input(id, edit, window, cx))?;
+        #[cfg(not(target_os = "macos"))]
+        Err(Error::from_reason("Input transactions are currently macOS-only"))
+    }
+
+    #[napi]
+    pub fn get_text_selection(&self) -> serde_json::Value {
+        self.selection.lock().ranges()
+    }
+
+    #[napi]
+    pub fn set_text_selection(&self, element_id: f64, sub: f64, start: f64, end: f64) -> Result<()> {
+        let id = to_element_id(element_id)?;
+        let selection = self.selection.clone();
+        let tree = self.tree.clone();
+        let sub = crate::custom_elements::input::utf16_offset(sub)?;
+        let start = crate::custom_elements::input::utf16_offset(start)?;
+        let end = crate::custom_elements::input::utf16_offset(end)?;
+        #[cfg(target_os = "macos")]
+        return update_window_without_view(move |window, _cx| {
+            crate::text::paint::select_text(&selection, &tree.lock().unwrap(), id, sub, start, end)?;
+            window.refresh();
+            Ok(())
+        })?;
+        #[cfg(not(target_os = "macos"))]
+        Err(Error::from_reason("Text selection is currently macOS-only"))
+    }
+
+    #[napi]
     pub fn zoom_window(&self) -> Result<()> {
         #[cfg(target_os = "macos")]
         return update_window(|_view, window, _cx| window.zoom_window());

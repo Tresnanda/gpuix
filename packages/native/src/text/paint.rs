@@ -33,8 +33,10 @@ use super::selection::{self, SelectionState};
 /// without an App context. All real access is single-threaded, so the mutex is
 /// always uncontended.
 pub type SharedSelection = Arc<Mutex<SelectionState>>;
+include!("../selection_cache.rs");
 
 /// One painted text element, registered per frame in document order.
+#[derive(Clone)]
 struct RegEntry {
     key: Arc<str>,
     text: SharedString,
@@ -48,6 +50,7 @@ struct RegEntry {
 /// `userSelect: "none"` chrome and native inputs register `selectable: false`
 /// so a same-row nearest-text clamp cannot steal their press. An explicit
 /// `userSelect: "text"` island registers `true` and can override an ancestor.
+#[derive(Clone)]
 struct StartRegion {
     bounds: Bounds<gpui::Pixels>,
     selectable: bool,

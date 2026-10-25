@@ -176,6 +176,15 @@ impl SelectionState {
         Some(join_spans(&self.spans))
     }
 
+    pub(crate) fn ranges(&self) -> serde_json::Value {
+        serde_json::Value::Array(self.spans.iter().filter(|span| !span.range.is_empty()).map(|span| {
+            let (id, sub) = span.key.split_once(':').unwrap_or(("0", "0"));
+            serde_json::json!({"elementId": id.parse::<u64>().unwrap_or(0), "sub": sub.parse::<u32>().unwrap_or(0),
+                "start": span.text[..span.range.start].encode_utf16().count(),
+                "end": span.text[..span.range.end].encode_utf16().count(), "text": span.text})
+        }).collect())
+    }
+
     pub fn clear(&mut self) {
         *self = SelectionState::default();
     }
