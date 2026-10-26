@@ -2640,6 +2640,7 @@ dependencies = [
  "napi",
  "napi-build",
  "napi-derive",
+ "notify-rust",
  "parking_lot",
  "percent-encoding",
  "pulldown-cmark",
