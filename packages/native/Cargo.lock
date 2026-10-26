@@ -2662,6 +2662,7 @@ dependencies = [
  "wasm-bindgen",
  "web-sys",
  "web-time",
+ "wgpu",
  "windows 0.61.3",
 ]
 
