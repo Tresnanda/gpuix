@@ -54,6 +54,16 @@ pub(crate) fn is_control(
 }
 
 /// Inside a drag region a control keeps the press instead of moving the window.
-pub(crate) fn control(el: Stateful<Div>) -> Stateful<Div> {
-    el.on_mouse_down(gpui::MouseButton::Left, |_, _, _| CONTROL_PRESSED.with(|pressed| pressed.set(true)))
+pub(crate) fn control(
+    el: Stateful<Div>,
+    props: &std::collections::HashMap<String, serde_json::Value>,
+) -> Stateful<Div> {
+    let el = el.on_mouse_down(gpui::MouseButton::Left, |_, _, _| CONTROL_PRESSED.with(|pressed| pressed.set(true)));
+    // Windows asks which control area is under the cursor (WM_NCHITTEST) before any press: an area marked
+    // `windowDrag={false}` must hide the drag region behind it from that hit test, or a press on its buttons becomes a
+    // caption press and DefWindowProc's move loop swallows the release (the nav rail's buttons did not click).
+    if cfg!(target_os = "windows") && props.get("windowDrag").and_then(|drag| drag.as_bool()) == Some(false) {
+        return el.occlude();
+    }
+    el
 }

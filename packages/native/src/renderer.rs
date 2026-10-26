@@ -6644,7 +6644,7 @@ pub(crate) fn build_host_container(
     if element.custom_props().get("windowDrag").and_then(|v| v.as_bool()) == Some(true) {
         el = crate::window_drag::apply(el);
     } else if crate::window_drag::is_control(element.events(), element.custom_props()) {
-        el = crate::window_drag::control(el);
+        el = crate::window_drag::control(el, element.custom_props());
     }
 
     // Wire up events.
