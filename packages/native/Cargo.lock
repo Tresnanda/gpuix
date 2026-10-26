@@ -2410,7 +2410,6 @@ dependencies = [
  "image",
  "libc",
  "log",
- "notify-rust",
  "oo7",
  "open",
  "parking_lot",
@@ -2429,6 +2428,7 @@ dependencies = [
  "x11-clipboard",
  "x11rb",
  "xkbcommon",
+ "zbus",
  "zed-scap",
  "zed-xim",
 ]

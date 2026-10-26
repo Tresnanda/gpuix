@@ -1683,6 +1683,11 @@ impl GpuixRenderer {
                         .with_quit_mode(gpui::QuitMode::LastWindowClosed)
                         .run(move |cx| {
                             UI_PLATFORM.set(if cfg!(target_os = "windows") { "windows" } else { cx.compositor_name() }).ok();
+                            // The notification identity JavaScript chose at startup goes in before the window exists: on
+                            // Windows the process AppUserModelID then covers the first window (taskbar grouping, toasts).
+                            if let Some((identifier, name)) = crate::system_notifications::early_identity() {
+                                cx.set_app_identity(&identifier, &name);
+                            }
                             crate::custom_elements::input::init(cx);
                             crate::custom_elements::img::init(cx);
                             if terminal {
@@ -2216,10 +2221,11 @@ impl GpuixRenderer {
 
     /// Kybern WP5: post a notification. A later post with the same `tag`
     /// replaces it where the platform can (Windows toast tag, Linux
-    /// `replaces_id`). Delivery problems (no daemon, notifications disabled) are
-    /// logged, not thrown: ask `systemNotificationStatus` first.
+    /// `replaces_id`). `silent` posts it without a sound. Delivery problems (no
+    /// daemon, notifications disabled) are logged, not thrown: ask
+    /// `systemNotificationStatus` first.
     #[napi]
-    pub fn show_system_notification(&self, tag: String, title: String, body: String) -> Result<()> {
+    pub fn show_system_notification(&self, tag: String, title: String, body: String, silent: Option<bool>) -> Result<()> {
         #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
         return update_window_without_view_detached(move |_window, cx| {
             cx.show_system_notification(gpui::SystemNotification {
@@ -2227,18 +2233,20 @@ impl GpuixRenderer {
                 title: title.into(),
                 body: body.into(),
                 actions: Vec::new(),
+                silent: silent.unwrap_or(false),
             })
         });
 
         #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "freebsd")))]
         {
-            let _ = (tag, title, body);
+            let _ = (tag, title, body, silent);
             Err(Error::from_reason("System notifications through the addon are Windows and Linux only"))
         }
     }
 
     /// Kybern WP5: withdraw a notification by tag. Best effort (Windows hides the
-    /// toast; the freedesktop interface lets it age out).
+    /// toast, Linux closes the server-side notification; neither does anything for
+    /// a tag that has none).
     #[napi]
     pub fn dismiss_system_notification(&self, tag: String) -> Result<()> {
         #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
@@ -2268,9 +2276,11 @@ impl GpuixRenderer {
         }
     }
 
-    /// Kybern WP5: `granted`, `denied` (the user turned this app's notifications
-    /// off, Windows) or `unsupported` (no notification service). Resolves off the
-    /// JS thread. `identifier` is the same one `setAppIdentity` got.
+    /// Kybern WP5: a JSON string `{"status":…,"markup":…}`. `status` is `granted`, `denied` (the user
+    /// turned this app's notifications off, Windows) or `unsupported` (no
+    /// notification service); `markup` (Linux) is whether the server renders
+    /// markup in a body, null when unknown. Resolves off the JS thread.
+    /// `identifier` is the same one `setAppIdentity` got.
     #[napi]
     pub fn system_notification_status(&self, identifier: String) -> napi::bindgen_prelude::AsyncTask<crate::system_notifications::StatusTask> {
         napi::bindgen_prelude::AsyncTask::new(crate::system_notifications::StatusTask::new(identifier))
