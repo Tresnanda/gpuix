@@ -52,13 +52,19 @@ fn platform_status(identifier: &str) -> &'static str {
     // This runs on a libuv worker. An already initialised thread answers with
     // S_FALSE or RPC_E_CHANGED_MODE, and WinRT works in both cases.
     let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
-    let setting = ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(identifier))
-        .and_then(|notifier| notifier.Setting());
-    match setting {
+    let notifier = match ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(identifier)) {
+        Ok(notifier) => notifier,
+        Err(error) => {
+            log::warn!("toast notifier unavailable for {identifier}: {error}");
+            return status_name(false, false);
+        }
+    };
+    // A notifier that exists but cannot say (some Windows Server images) is tried: a post that goes nowhere is harmless.
+    match notifier.Setting() {
         Ok(setting) => status_name(true, setting != NotificationSetting::Enabled),
         Err(error) => {
-            log::debug!("toast notifier unavailable: {error}");
-            status_name(false, false)
+            log::warn!("toast setting unreadable for {identifier}: {error}");
+            status_name(true, false)
         }
     }
 }
