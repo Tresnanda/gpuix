@@ -2186,6 +2186,86 @@ impl GpuixRenderer {
         Err(Error::from_reason("Unsupported operating system"))
     }
 
+    /// Kybern WP5: the app's identity for system notifications. Windows: the
+    /// AppUserModelID toasts are shown under (the installer's Start-menu shortcut
+    /// carries the same one) and the name in the registry fallback; Linux: the
+    /// desktop entry and icon name (`<identifier>.desktop`) and the app name.
+    /// Call once at startup, before the first notification. Windows and Linux
+    /// only: macOS notifies through its UserNotifications companion.
+    #[napi]
+    pub fn set_app_identity(&self, identifier: String, name: String) -> Result<()> {
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
+        return update_window_without_view(move |_window, cx| cx.set_app_identity(&identifier, &name));
+
+        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "freebsd")))]
+        {
+            let _ = (identifier, name);
+            Err(Error::from_reason("System notifications through the addon are Windows and Linux only"))
+        }
+    }
+
+    /// Kybern WP5: post a notification. A later post with the same `tag`
+    /// replaces it where the platform can (Windows toast tag, Linux
+    /// `replaces_id`). Delivery problems (no daemon, notifications disabled) are
+    /// logged, not thrown: ask `systemNotificationStatus` first.
+    #[napi]
+    pub fn show_system_notification(&self, tag: String, title: String, body: String) -> Result<()> {
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
+        return update_window_without_view_detached(move |_window, cx| {
+            cx.show_system_notification(gpui::SystemNotification {
+                tag: tag.into(),
+                title: title.into(),
+                body: body.into(),
+                actions: Vec::new(),
+            })
+        });
+
+        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "freebsd")))]
+        {
+            let _ = (tag, title, body);
+            Err(Error::from_reason("System notifications through the addon are Windows and Linux only"))
+        }
+    }
+
+    /// Kybern WP5: withdraw a notification by tag. Best effort (Windows hides the
+    /// toast; the freedesktop interface lets it age out).
+    #[napi]
+    pub fn dismiss_system_notification(&self, tag: String) -> Result<()> {
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
+        return update_window_without_view_detached(move |_window, cx| cx.dismiss_system_notification(&tag));
+
+        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "freebsd")))]
+        {
+            let _ = tag;
+            Err(Error::from_reason("System notifications through the addon are Windows and Linux only"))
+        }
+    }
+
+    /// Kybern WP5: called with `{ tag, action }` when the user clicks a
+    /// notification (`action` is null for the body). The window is raised first.
+    /// `null` stops reporting.
+    #[napi]
+    pub fn set_system_notification_callback(&self, callback: Option<ThreadsafeFunction<serde_json::Value>>) -> Result<()> {
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
+        return update_window_without_view(move |window, cx| {
+            crate::system_notifications::set_click_callback(window.window_handle(), cx, callback)
+        });
+
+        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "freebsd")))]
+        {
+            let _ = callback;
+            Err(Error::from_reason("System notifications through the addon are Windows and Linux only"))
+        }
+    }
+
+    /// Kybern WP5: `granted`, `denied` (the user turned this app's notifications
+    /// off, Windows) or `unsupported` (no notification service). Resolves off the
+    /// JS thread. `identifier` is the same one `setAppIdentity` got.
+    #[napi]
+    pub fn system_notification_status(&self, identifier: String) -> napi::bindgen_prelude::AsyncTask<crate::system_notifications::StatusTask> {
+        napi::bindgen_prelude::AsyncTask::new(crate::system_notifications::StatusTask::new(identifier))
+    }
+
     /// Bring the window forward and give it focus. This is how a window opened
     /// with `show: false` or `focus: false` is revealed later.
     #[napi]

@@ -60,6 +60,9 @@ mod renderer;
 pub mod retained_tree;
 pub mod style;
 mod syntax;
+// Windows and Linux system notifications (WP5); every other target reports "unsupported".
+#[cfg(not(target_family = "wasm"))]
+mod system_notifications;
 mod text;
 mod theme;
 // Desktop only. HTTP goes through reqwest_client, not crates.io reqwest.
