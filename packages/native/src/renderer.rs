@@ -2797,6 +2797,11 @@ impl GpuixRenderer {
 
     #[napi]
     pub fn set_window_state_callback(&self, callback: Option<ThreadsafeFunction<serde_json::Value>>) {
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
+        if let Err(error) = update_window(move |_view, window, cx| crate::idle_memory::observe_window_state(callback, window, cx)) {
+            eprintln!("[gpuix] window-state observer: {error}");
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "freebsd")))]
         crate::idle_memory::set_window_state_callback(callback);
     }
     #[napi]
