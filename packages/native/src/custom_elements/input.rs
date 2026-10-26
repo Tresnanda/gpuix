@@ -267,6 +267,17 @@ fn text_editor_bindings(
             bindings.push(KeyBinding::new(&format!("{prefix}-v"), Paste, context));
         }
     }
+    // Off macOS (WP3): ctrl-y redoes, and ctrl-home/ctrl-end are the text's ends (cmd-up/cmd-down
+    // there would be the Windows / Super key), as in the rich editor.
+    if !word_navigation_uses_alt {
+        bindings.extend([
+            KeyBinding::new("ctrl-y", Redo, context),
+            KeyBinding::new("ctrl-home", DocStart, context),
+            KeyBinding::new("ctrl-end", DocEnd, context),
+            KeyBinding::new("shift-ctrl-home", SelectDocStart, context),
+            KeyBinding::new("shift-ctrl-end", SelectDocEnd, context),
+        ]);
+    }
     bindings
 }
 

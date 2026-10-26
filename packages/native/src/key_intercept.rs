@@ -91,7 +91,9 @@ pub(crate) fn resolve(token: u32, prevented: bool, window: &mut Window, cx: &mut
         if item.answer == Some(false) && item.focus.is_focused(window) {
             REPLAY.with(|flag| flag.set(true));
             if item.event.keystroke.key_char.is_some() {
-                window.dispatch_keystroke(item.event.keystroke, cx);
+                // With its prefer_character_input: Windows AltGr text is ctrl-alt plus a character, and
+                // a ctrl-alt binding (the rich editor's headings, ctrl-alt-0) must not take it.
+                window.dispatch_key_down(KeyDownEvent { is_held: false, ..item.event }, cx);
             } else {
                 window.dispatch_event(gpui::PlatformInput::KeyDown(item.event), cx);
             }

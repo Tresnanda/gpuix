@@ -74,14 +74,25 @@ fn buttons(side: &[Option<gpui::WindowButton>]) -> Vec<&'static str> {
     side.iter().flatten().map(|button| button.id()).collect()
 }
 
-/// The window's title-bar state, as one JSON object.
+/// The window's title-bar state, as one JSON object, `bounds` included.
 pub(crate) fn chrome(window: &gpui::Window, cx: &gpui::App) -> serde_json::Value {
+    let mut state = state(window, reduced_motion(), button_layout(cx));
+    state["bounds"] = bounds(window, cx);
+    state
+}
+
+fn button_layout(cx: &gpui::App) -> serde_json::Value {
+    serde_json::json!(cx.button_layout().map(|layout| serde_json::json!({ "left": buttons(&layout.left), "right": buttons(&layout.right) })))
+}
+
+/// `chrome` without `bounds`, from the reduced-motion and button-layout values
+/// `observe` keeps (a system call and a desktop-settings read it skips per move).
+fn state(window: &gpui::Window, reduced_motion: Option<bool>, button_layout: serde_json::Value) -> serde_json::Value {
     let (decorations, tiling) = match window.window_decorations() {
         gpui::Decorations::Server => ("server", None),
         gpui::Decorations::Client { tiling } => ("client", Some(tiling)),
     };
     let controls = window.window_controls();
-    let layout = cx.button_layout();
     let appearance = match window.appearance() {
         gpui::WindowAppearance::Light | gpui::WindowAppearance::VibrantLight => "light",
         gpui::WindowAppearance::Dark | gpui::WindowAppearance::VibrantDark => "dark",
@@ -96,29 +107,44 @@ pub(crate) fn chrome(window: &gpui::Window, cx: &gpui::App) -> serde_json::Value
         "resizable": window.is_resizable(),
         "minimizable": window.is_minimizable(),
         "controls": { "minimize": controls.minimize, "maximize": controls.maximize, "fullscreen": controls.fullscreen, "windowMenu": controls.window_menu },
-        "buttonLayout": layout.map(|layout| serde_json::json!({ "left": buttons(&layout.left), "right": buttons(&layout.right) })),
+        "buttonLayout": button_layout,
         "appearance": appearance,
-        "reducedMotion": reduced_motion(),
-        "bounds": bounds(window, cx),
+        "reducedMotion": reduced_motion,
     })
 }
 
 /// The bounds to save and restore the window with: the restored (not maximized)
 /// frame in GPUI's global logical coordinates, its state, and the display's id.
 pub(crate) fn bounds(window: &gpui::Window, cx: &gpui::App) -> serde_json::Value {
+    bounds_on(window, cx, &mut None)
+}
+
+/// `bounds`, with the display's id looked up again only when the window moved to
+/// another display (`display` holds the last one).
+fn bounds_on(window: &gpui::Window, cx: &gpui::App, display: &mut Option<(gpui::DisplayId, Option<String>)>) -> serde_json::Value {
     let (state, rect) = match window.window_bounds() {
         gpui::WindowBounds::Windowed(rect) => ("windowed", rect),
         gpui::WindowBounds::Maximized(rect) => ("maximized", rect),
         gpui::WindowBounds::Fullscreen(rect) => ("fullscreen", rect),
     };
-    let display = window.display(cx).and_then(|display| display.uuid().ok()).map(|uuid| uuid.to_string());
+    let uuid = match window.display(cx) {
+        Some(now) => match display {
+            Some((id, uuid)) if *id == now.id() => uuid.clone(),
+            _ => {
+                let uuid = now.uuid().ok().map(|uuid| uuid.to_string());
+                *display = Some((now.id(), uuid.clone()));
+                uuid
+            }
+        },
+        None => None,
+    };
     serde_json::json!({
         "state": state,
         "x": f32::from(rect.origin.x),
         "y": f32::from(rect.origin.y),
         "width": f32::from(rect.size.width),
         "height": f32::from(rect.size.height),
-        "display": display,
+        "display": uuid,
     })
 }
 
@@ -127,6 +153,16 @@ pub(crate) fn bounds(window: &gpui::Window, cx: &gpui::App) -> serde_json::Value
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 pub(crate) fn display_for(uuid: &str, cx: &gpui::App) -> Option<gpui::DisplayId> {
     cx.displays().into_iter().find(|display| display.uuid().is_ok_and(|id| id.to_string() == uuid)).map(|display| display.id())
+}
+
+/// Whether a saved frame's title bar (its top 32 points) is on a connected
+/// display, in GPUI's global logical coordinates.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+pub(crate) fn on_a_display(frame: gpui::Bounds<gpui::Pixels>, cx: &gpui::App) -> bool {
+    let bar = gpui::Bounds { origin: frame.origin, size: gpui::size(frame.size.width, frame.size.height.min(gpui::px(32.0))) };
+    let displays = cx.displays();
+    // No display information (a headless platform): place it as saved.
+    displays.is_empty() || displays.iter().any(|display| display.bounds().intersects(&bar))
 }
 
 /// Windows: "Animation effects" off (Settings › Accessibility › Visual effects)
@@ -148,38 +184,109 @@ thread_local! {
     static OBSERVERS: std::cell::RefCell<Vec<gpui::Subscription>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
+/// A move or resize step that changes only the bounds is sent once the frame has
+/// rested this long (JS saves the frame, nothing on screen follows it).
+const BOUNDS_REST: std::time::Duration = std::time::Duration::from_millis(200);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Change {
+    Bounds,
+    Activation,
+    Appearance,
+    ButtonLayout,
+}
+
+/// What `observe` keeps between notifications.
+struct Observed {
+    callback: std::sync::Arc<napi::threadsafe_function::ThreadsafeFunction<serde_json::Value>>,
+    /// Read again on an appearance change (Windows sends one when "Animation effects" changes).
+    reduced_motion: Option<bool>,
+    /// Read again when the desktop's button layout changes.
+    button_layout: serde_json::Value,
+    display: Option<(gpui::DisplayId, Option<String>)>,
+    /// The last state and bounds sent.
+    state: serde_json::Value,
+    bounds: serde_json::Value,
+    /// A bounds-only send is waiting for the frame to rest.
+    pending: bool,
+}
+
+impl Observed {
+    fn send(&mut self, state: serde_json::Value, bounds: serde_json::Value) {
+        use napi::threadsafe_function::ThreadsafeFunctionCallMode;
+        let mut report = state.clone();
+        report["bounds"] = bounds.clone();
+        self.state = state;
+        self.bounds = bounds;
+        self.callback.call(Ok(report), ThreadsafeFunctionCallMode::NonBlocking);
+    }
+}
+
 /// Call `callback` with the new `chrome` when the window's bounds, activation,
 /// appearance or the desktop's button layout change, so JS follows the window
-/// without a waited bridge call per change. Unchanged states are not sent.
-/// `None` stops.
+/// without a waited bridge call per change. Unchanged states are not sent; a
+/// change of the bounds alone (each step of a drag) is sent once they rest, and
+/// the costly fields are read only when their own notification comes. `None` stops.
 pub(crate) fn observe(
     callback: Option<napi::threadsafe_function::ThreadsafeFunction<serde_json::Value>>,
     window: &mut gpui::Window,
     cx: &mut gpui::Context<GpuixView>,
 ) {
-    use napi::threadsafe_function::ThreadsafeFunctionCallMode;
+    use std::{cell::RefCell, rc::Rc};
     let Some(callback) = callback else {
         OBSERVERS.with(|observers| observers.borrow_mut().clear());
         return;
     };
-    let callback = std::sync::Arc::new(callback);
-    let last = std::rc::Rc::new(std::cell::RefCell::new(serde_json::Value::Null));
-    let notify = move || {
-        let callback = callback.clone();
-        let last = last.clone();
+    let observed = Rc::new(RefCell::new(Observed {
+        callback: std::sync::Arc::new(callback),
+        reduced_motion: reduced_motion(),
+        button_layout: button_layout(cx),
+        display: None,
+        state: serde_json::Value::Null,
+        bounds: serde_json::Value::Null,
+        pending: false,
+    }));
+    let notify = move |change: Change| {
+        let observed = observed.clone();
         move |_: &mut GpuixView, window: &mut gpui::Window, cx: &mut gpui::Context<GpuixView>| {
-            let state = chrome(window, cx);
-            if *last.borrow() != state {
-                *last.borrow_mut() = state.clone();
-                callback.call(Ok(state), ThreadsafeFunctionCallMode::NonBlocking);
+            let mut o = observed.borrow_mut();
+            match change {
+                Change::Appearance => o.reduced_motion = reduced_motion(),
+                Change::ButtonLayout => o.button_layout = button_layout(cx),
+                Change::Bounds | Change::Activation => {}
             }
+            let state = state(window, o.reduced_motion, o.button_layout.clone());
+            let bounds = bounds_on(window, cx, &mut o.display);
+            if state != o.state {
+                o.send(state, bounds);
+                return;
+            }
+            if bounds == o.bounds || o.pending {
+                return;
+            }
+            o.pending = true;
+            let observed = observed.clone();
+            cx.spawn_in(window, async move |view, cx| {
+                cx.background_executor().timer(BOUNDS_REST).await;
+                view.update_in(cx, |_, window, cx| {
+                    let mut o = observed.borrow_mut();
+                    o.pending = false;
+                    let bounds = bounds_on(window, cx, &mut o.display);
+                    if bounds != o.bounds {
+                        let state = o.state.clone();
+                        o.send(state, bounds);
+                    }
+                })
+                .ok();
+            })
+            .detach();
         }
     };
     let subscriptions = vec![
-        cx.observe_window_bounds(window, notify()),
-        cx.observe_window_activation(window, notify()),
-        cx.observe_window_appearance(window, notify()),
-        cx.observe_button_layout_changed(window, notify()),
+        cx.observe_window_bounds(window, notify(Change::Bounds)),
+        cx.observe_window_activation(window, notify(Change::Activation)),
+        cx.observe_window_appearance(window, notify(Change::Appearance)),
+        cx.observe_button_layout_changed(window, notify(Change::ButtonLayout)),
     ];
     OBSERVERS.with(|observers| *observers.borrow_mut() = subscriptions);
 }

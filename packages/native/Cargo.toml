@@ -66,6 +66,9 @@ url = { version = "2", features = ["serde"] }
 # (the same crate, version and features GPUI's Linux platform posts with).
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 notify-rust = "=4.18.0"
+# Kybern WP10: `<websurface>` uploads web frames into textures on GPUI's own device (`Window::gpu_context`), so this
+# must be the same wgpu crate gpui_wgpu uses (the downcast compares types).
+wgpu = { version = "29.0.4", default-features = false }
 
 [target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
 napi = { version = "3.12.7", features = ["napi8", "serde-json"] }
@@ -99,11 +102,6 @@ gpui_macos = { path = "../../zed/crates/gpui_macos", default-features = false, f
 # Renders into the current terminal with the kitty graphics protocol (`terminal: true`).
 [target.'cfg(any(target_os = "macos", target_os = "linux", target_os = "freebsd"))'.dependencies]
 gpui_terminal = { path = "../gpui-terminal" }
-
-# Kybern WP10: `<websurface>` uploads web frames into textures on GPUI's own device (`Window::gpu_context`), so this
-# must be the same wgpu crate gpui_wgpu uses (the downcast compares types).
-[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
-wgpu = { version = "29.0.4", default-features = false }
 
 # Same crate GPUI uses. A .node cannot ship an exe manifest, so Windows DPI
 # awareness is set at runtime in renderer.rs instead of via windows-manifest.

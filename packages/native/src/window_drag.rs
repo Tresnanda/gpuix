@@ -104,13 +104,15 @@ pub(crate) fn is_control(
         || props.get("windowDrag").and_then(|drag| drag.as_bool()) == Some(false)
 }
 
-/// Inside a drag region a control keeps the press instead of moving the window.
-/// On Windows that is decided by the hit test, before any press reaches GPUI.
+/// Inside a drag region a control keeps the press instead of moving the window,
+/// with any button: a right click on a control is the control's (its context
+/// menu), not the window menu Linux opens on the region. On Windows that is
+/// decided by the hit test, before any press reaches GPUI.
 pub(crate) fn control(el: Stateful<Div>) -> Stateful<Div> {
     #[cfg(target_os = "windows")]
     return el.window_control_area(gpui::WindowControlArea::Client);
     #[cfg(not(target_os = "windows"))]
-    el.on_mouse_down(gpui::MouseButton::Left, |_, _, _| CONTROL_PRESSED.with(|pressed| pressed.set(true)))
+    el.on_any_mouse_down(|_, _, _| CONTROL_PRESSED.with(|pressed| pressed.set(true)))
 }
 
 /// A Windows caption button (`windowControl` prop): `minimize`, `maximize` or
