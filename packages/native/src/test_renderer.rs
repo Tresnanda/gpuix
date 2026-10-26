@@ -934,6 +934,18 @@ impl TestGpuixRenderer {
         })
     }
 
+    /// The family `.SystemUIFont` uses; `null` restores the platform's UI font.
+    #[napi]
+    pub fn set_system_ui_font(&self, family: Option<String>) -> Result<()> {
+        with_test_state(|cx, window, view| {
+            let view = view.clone();
+            cx.update_window(window, |_, window, app| {
+                view.update(app, |view, cx| view.set_system_ui_font(family, window, cx))
+            })
+            .map_err(|e| Error::from_reason(e.to_string()))
+        })
+    }
+
     /// Make the fonts in a TrueType or OpenType file usable by `fontFamily`.
     #[napi]
     pub fn register_font(&self, data: Buffer) -> Result<()> {

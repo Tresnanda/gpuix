@@ -636,6 +636,10 @@ enum UiCommand {
         bytes: Vec<u8>,
         response: SyncSender<std::result::Result<(), String>>,
     },
+    SetSystemUiFont {
+        family: Option<String>,
+        response: SyncSender<()>,
+    },
     GetScrollOffset {
         id: u64,
         response: SyncSender<Option<[f64; 2]>>,
@@ -845,6 +849,12 @@ async fn run_ui_commands(
             UiCommand::RegisterFont { bytes, response } => {
                 window.update(cx, move |view, window, cx| {
                     response.send(view.register_font(bytes, window, cx)).ok();
+                })
+            }
+            UiCommand::SetSystemUiFont { family, response } => {
+                window.update(cx, move |view, window, cx| {
+                    view.set_system_ui_font(family, window, cx);
+                    response.send(()).ok();
                 })
             }
             UiCommand::GetScrollOffset { id, response } => {
@@ -3282,6 +3292,34 @@ impl GpuixRenderer {
         Err(Error::from_reason("Unsupported operating system"))
     }
 
+    /// The family `.SystemUIFont` (and text with no `fontFamily`) uses; `null` restores the
+    /// platform's UI font. Kybern sets a variable face off macOS, so the kit's weights land on
+    /// its `wght` axis. Call it before the first layout, like `registerFont`.
+    #[napi]
+    pub fn set_system_ui_font(&self, family: Option<String>) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        {
+            return update_window(move |view, window, cx| {
+                view.set_system_ui_font(family, window, cx)
+            });
+        }
+
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
+        {
+            let (response, receiver) = sync_channel(1);
+            self.send_ui_command(UiCommand::SetSystemUiFont { family, response })?;
+            return recv_ui_response(receiver, "the system UI font");
+        }
+
+        #[cfg(not(any(
+            target_os = "macos",
+            target_os = "windows",
+            target_os = "linux",
+            target_os = "freebsd"
+        )))]
+        Err(Error::from_reason("Unsupported operating system"))
+    }
+
     #[napi]
     pub fn get_automation_tree(&self) -> Result<String> {
         self.request_invalidate()?;
@@ -4912,6 +4950,18 @@ impl GpuixView {
         cx.notify();
         window.refresh();
         Ok(())
+    }
+
+    pub(crate) fn set_system_ui_font(
+        &mut self,
+        family: Option<String>,
+        window: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        cx.text_system()
+            .set_system_ui_font(family.map(gpui::SharedString::from));
+        cx.notify();
+        window.refresh();
     }
 
     pub(crate) fn scroll_element_into_view(&self, id: u64) -> bool {
