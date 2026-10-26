@@ -1757,19 +1757,29 @@ impl GpuixRenderer {
                             let size = gpui::size(gpui::px(width as f32), gpui::px(height as f32));
                             // A layer-shell surface is positioned by the compositor from its
                             // anchor, so it opens at the origin; a normal window is centered.
+                            // Kybern (WP3): a saved frame (off macOS; macOS restores AppKit's frame
+                            // string). GPUI places it as given (X11 takes the origin unchecked), so a
+                            // frame whose title bar is on no connected display (a monitor unplugged
+                            // since) is centered on the primary one instead.
+                            let saved = match (window_options.x, window_options.y) {
+                                (Some(x), Some(y)) if window_options.layer_shell.is_none() => {
+                                    let frame = gpui::Bounds { origin: gpui::point(gpui::px(x as f32), gpui::px(y as f32)), size };
+                                    crate::window_chrome::on_a_display(frame, cx).then_some(frame)
+                                }
+                                _ => None,
+                            };
                             let bounds = if window_options.layer_shell.is_some() {
                                 gpui::Bounds {
                                     origin: gpui::point(gpui::px(0.0), gpui::px(0.0)),
                                     size,
                                 }
-                            } else if let (Some(x), Some(y)) = (window_options.x, window_options.y) {
-                                // Kybern (WP3): a saved frame; GPUI centers it on its display when it is no longer on one.
-                                gpui::Bounds { origin: gpui::point(gpui::px(x as f32), gpui::px(y as f32)), size }
+                            } else if let Some(frame) = saved {
+                                frame
                             } else {
                                 crate::automation_display::centered(size, cx)
                             };
                             let mut gpui_options = to_gpui_window_options(&window_options, bounds);
-                            if let Some(display) = window_options.display.as_deref().and_then(|uuid| crate::window_chrome::display_for(uuid, cx)) {
+                            if let Some(display) = window_options.display.as_deref().filter(|_| saved.is_some()).and_then(|uuid| crate::window_chrome::display_for(uuid, cx)) {
                                 gpui_options.display_id = Some(display);
                             }
                             let window = match cx.open_window(
