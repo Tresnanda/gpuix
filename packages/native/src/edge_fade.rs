@@ -43,8 +43,11 @@ impl Element for EdgeFade {
 /// The stock addon has no such export.
 #[napi_derive::napi]
 pub fn kybern_capabilities() -> serde_json::Value {
-    // `backdrop`: the scene backdrop filter blurs on this OS's renderer (Metal, wgpu, Direct3D 11 since WP9), so the app
-    // can keep frosted surfaces translucent. `windowMaterials`: window backgrounds beyond opaque/blurred/transparent.
+    // `backdrop`: the scene backdrop filter can blur on this OS's renderer (Metal, wgpu, Direct3D 11 since WP9), so the
+    // app can keep frosted surfaces translucent; false off macOS with `KYBERN_BACKDROP_FILTER=0`, the renderers' switch.
+    // Whether an open window's renderer does (a wgpu surface without COPY_SRC does not) is
+    // `GpuixRenderer::backdrop_filter_supported`. `windowMaterials`: window backgrounds beyond opaque/blurred/transparent.
+    let backdrop = cfg!(target_os = "macos") || !std::env::var("KYBERN_BACKDROP_FILTER").is_ok_and(|value| value == "0");
     let window_materials: &[&str] = if cfg!(target_os = "windows") { &["mica", "mica-alt", "acrylic"] } else { &[] };
-    serde_json::json!({ "edgeFade": true, "backdrop": true, "windowMaterials": window_materials })
+    serde_json::json!({ "edgeFade": true, "backdrop": backdrop, "windowMaterials": window_materials })
 }
