@@ -65,7 +65,7 @@ url = { version = "2", features = ["serde"] }
 # `systemNotificationStatus` asks the notification daemon for its information
 # (the same crate, version and features GPUI's Linux platform posts with).
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
-notify-rust = "4"
+notify-rust = "=4.18.0"
 
 [target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
 napi = { version = "3.12.7", features = ["napi8", "serde-json"] }
