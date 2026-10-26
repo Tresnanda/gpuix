@@ -43,5 +43,8 @@ impl Element for EdgeFade {
 /// The stock addon has no such export.
 #[napi_derive::napi]
 pub fn kybern_capabilities() -> serde_json::Value {
-    serde_json::json!({ "edgeFade": true })
+    // `backdrop`: the scene backdrop filter blurs on this OS's renderer (Metal, wgpu, Direct3D 11 since WP9), so the app
+    // can keep frosted surfaces translucent. `windowMaterials`: window backgrounds beyond opaque/blurred/transparent.
+    let window_materials: &[&str] = if cfg!(target_os = "windows") { &["mica", "mica-alt", "acrylic"] } else { &[] };
+    serde_json::json!({ "edgeFade": true, "backdrop": true, "windowMaterials": window_materials })
 }

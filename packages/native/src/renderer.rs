@@ -8572,12 +8572,11 @@ fn to_gpui_window_options(
         (Some(x), Some(y)) => Some(gpui::point(gpui::px(x as f32), gpui::px(y as f32))),
         _ => None,
     };
-    let window_background = match options.window_background.as_deref() {
-        Some("transparent") => gpui::WindowBackgroundAppearance::Transparent,
-        Some("blurred") => gpui::WindowBackgroundAppearance::Blurred,
-        Some("opaque") => gpui::WindowBackgroundAppearance::Opaque,
-        _ if options.transparent.unwrap_or(false) => gpui::WindowBackgroundAppearance::Transparent,
-        _ => gpui::WindowBackgroundAppearance::Opaque,
+    // Kybern: the names `setWindowBackground` takes, Windows 11 system backdrops included (window_platform.rs).
+    let window_background = match options.window_background.as_deref().and_then(crate::window_platform::background_name) {
+        Some(appearance) => appearance,
+        None if options.transparent.unwrap_or(false) => gpui::WindowBackgroundAppearance::Transparent,
+        None => gpui::WindowBackgroundAppearance::Opaque,
     };
     let window_min_size = match (options.min_width, options.min_height) {
         (Some(width), Some(height)) => {
