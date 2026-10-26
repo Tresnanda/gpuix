@@ -717,6 +717,7 @@ fn full_invalidate() -> bool {
 /// How long a bounds query waits for the next frame before it answers with the last laid-out bounds.
 const BOUNDS_FRAME_WAIT: Duration = Duration::from_millis(250);
 
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
 /// Answer a bounds query after the next frame, which lays out what JS just committed. A minimized or hidden window
 /// draws no frame (Windows; Wayland sends no frame callback), and the caller would time out after 2 seconds and throw
 /// (the composer reads its card's width while rendering), so after `BOUNDS_FRAME_WAIT` the last laid-out bounds are
@@ -742,6 +743,7 @@ fn answer_after_frame<T: 'static>(
     }
 }
 
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
 async fn run_ui_commands(
     mut commands: mpsc::UnboundedReceiver<UiCommand>,
     window: gpui::WindowHandle<GpuixView>,
