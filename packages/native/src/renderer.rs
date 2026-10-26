@@ -714,6 +714,34 @@ fn full_invalidate() -> bool {
 }
 
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
+/// How long a bounds query waits for the next frame before it answers with the last laid-out bounds.
+const BOUNDS_FRAME_WAIT: Duration = Duration::from_millis(250);
+
+/// Answer a bounds query after the next frame, which lays out what JS just committed. A minimized or hidden window
+/// draws no frame (Windows; Wayland sends no frame callback), and the caller would time out after 2 seconds and throw
+/// (the composer reads its card's width while rendering), so after `BOUNDS_FRAME_WAIT` the last laid-out bounds are
+/// sent instead, as macOS always does. Both paths run on the UI thread, where the bounds live.
+fn answer_after_frame<T: 'static>(
+    response: std::sync::mpsc::SyncSender<T>,
+    read: impl Fn() -> T + 'static,
+    cx: &mut gpui::AsyncApp,
+) -> impl FnOnce() + 'static {
+    let pending = std::rc::Rc::new(std::cell::RefCell::new(Some((response, read))));
+    let late = pending.clone();
+    cx.spawn(async move |cx| {
+        cx.background_executor().timer(BOUNDS_FRAME_WAIT).await;
+        if let Some((response, read)) = late.borrow_mut().take() {
+            response.send(read()).ok();
+        }
+    })
+    .detach();
+    move || {
+        if let Some((response, read)) = pending.borrow_mut().take() {
+            response.send(read()).ok();
+        }
+    }
+}
+
 async fn run_ui_commands(
     mut commands: mpsc::UnboundedReceiver<UiCommand>,
     window: gpui::WindowHandle<GpuixView>,
@@ -908,21 +936,19 @@ async fn run_ui_commands(
                 })
             }
             UiCommand::GetAutomationBounds { response } => {
+                let answer = answer_after_frame(response, crate::automation::all_bounds, cx);
                 window.update(cx, move |_view, window, cx| {
                     cx.notify();
                     window.refresh();
-                    window.on_next_frame(move |_window, _cx| {
-                        response.send(crate::automation::all_bounds()).ok();
-                    });
+                    window.on_next_frame(move |_window, _cx| answer());
                 })
             }
             UiCommand::GetElementBounds { id, response } => {
+                let answer = answer_after_frame(response, move || crate::automation::get_bounds(id), cx);
                 window.update(cx, move |_view, window, cx| {
                     cx.notify();
                     window.refresh();
-                    window.on_next_frame(move |_window, _cx| {
-                        response.send(crate::automation::get_bounds(id)).ok();
-                    });
+                    window.on_next_frame(move |_window, _cx| answer());
                 })
             }
             UiCommand::FocusElement(id) => window.update(cx, move |view, window, cx| {
