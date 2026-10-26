@@ -683,7 +683,7 @@ enum UiCommand {
         input: KeyInput,
         response: SyncSender<std::result::Result<(), String>>,
     },
-    #[cfg(all(target_os = "windows", feature = "test-support"))]
+    #[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "freebsd"), feature = "test-support"))]
     CaptureScreenshot {
         path: String,
         as_drawn: bool,
@@ -1064,7 +1064,7 @@ async fn run_ui_commands(
                     .ok();
                 result
             }
-            #[cfg(all(target_os = "windows", feature = "test-support"))]
+            #[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "freebsd"), feature = "test-support"))]
             // Kybern: `as_drawn` saves the scene last presented, without the
             // refresh (which rebuilds every cached island), so a stale island shows.
             UiCommand::CaptureScreenshot { path, as_drawn: true, response } => window.update(cx, move |_view, window, _cx| {
@@ -1074,7 +1074,7 @@ async fn run_ui_commands(
                     .and_then(|image| image.save(&path).map_err(|error| format!("Failed to save screenshot: {error}")));
                 response.send(result).ok();
             }),
-            #[cfg(all(target_os = "windows", feature = "test-support"))]
+            #[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "freebsd"), feature = "test-support"))]
             UiCommand::CaptureScreenshot { path, as_drawn: false, response } => {
                 let error_response = response.clone();
                 let result = window.update(cx, move |_view, window, cx| {
@@ -3696,7 +3696,7 @@ impl GpuixRenderer {
             Ok(())
         }
 
-        #[cfg(all(target_os = "windows", feature = "test-support"))]
+        #[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "freebsd"), feature = "test-support"))]
         {
             let (response, receiver) = sync_channel(1);
             self.send_ui_command(UiCommand::CaptureScreenshot { path, as_drawn, response })?;
@@ -3705,12 +3705,12 @@ impl GpuixRenderer {
 
         #[cfg(not(all(
             feature = "test-support",
-            any(target_os = "macos", target_os = "windows")
+            any(target_os = "macos", target_os = "windows", target_os = "linux", target_os = "freebsd")
         )))]
         {
             let _ = (path, as_drawn);
             Err(Error::from_reason(
-                "captureScreenshot needs a test-support build on macOS or Windows",
+                "captureScreenshot needs a test-support build on macOS, Windows or Linux",
             ))
         }
     }
