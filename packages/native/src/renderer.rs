@@ -1616,6 +1616,41 @@ impl GpuixRenderer {
         Err(Error::from_reason("The production GPUIX renderer does not support this operating system"))
     }
 
+    /// Kybern: the light/dark appearance DWM draws the windows' title bar and system backdrop (Mica, Acrylic) in on
+    /// Windows: `"dark"`, `"light"`, or null to follow the system again (WP9). Windows only (returns false elsewhere):
+    /// macOS keeps setting each NSWindow's appearance itself (`shell/appearance.ts`), and an NSApplication override would
+    /// also change the system appearance the app reads.
+    #[napi]
+    pub fn set_window_appearance(&self, appearance: Option<String>) -> Result<bool> {
+        #[cfg(target_os = "windows")]
+        {
+            let appearance = match appearance.as_deref() {
+                None => None,
+                Some("dark") => Some(gpui::WindowAppearance::Dark),
+                Some("light") => Some(gpui::WindowAppearance::Light),
+                Some(other) => return Err(Error::from_reason(format!("unknown window appearance {other:?}"))),
+            };
+            update_window_without_view(move |_window, cx| cx.set_window_appearance(appearance))?;
+            return Ok(true);
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = appearance;
+            Ok(false)
+        }
+    }
+
+    /// Kybern: whether the open window's renderer draws `backdrop` filters (WP9). `kybernCapabilities().backdrop` says
+    /// whether this build can; this says whether the window does: false on wgpu when its surface cannot be copied from,
+    /// and everywhere off macOS with `KYBERN_BACKDROP_FILTER=0`. Without it the app gives frosted surfaces dense fills.
+    #[napi]
+    pub fn backdrop_filter_supported(&self) -> Result<bool> {
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux", target_os = "freebsd"))]
+        return update_window_without_view(|window, _cx| window.backdrop_filter_supported());
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux", target_os = "freebsd")))]
+        Err(Error::from_reason("The production GPUIX renderer does not support this operating system"))
+    }
+
     #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
     fn init_threaded(&self, options: Option<WindowOptions>) -> Result<()> {
         let options = options.unwrap_or_default();
