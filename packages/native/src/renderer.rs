@@ -2517,11 +2517,30 @@ impl GpuixRenderer {
 
     #[napi]
     pub fn add_layout_observer(&self, target: serde_json::Value, callback: ThreadsafeFunction<serde_json::Value>) -> Result<u32> {
-        update_window(move |view, _, cx| {
-            let token = view.layout_observers.borrow_mut().add(target, callback, &view.tree.lock().unwrap())?;
+        let token = crate::layout_observer::next_token()?;
+        // On macOS this runs now and a refused target throws. Off macOS it is queued, not
+        // waited for (each mounted transcript row adds one while scrolling): a refused
+        // target reaches the callback as its error, and a later remove or waited call
+        // runs after it.
+        #[cfg(target_os = "macos")]
+        return update_window(move |view, _, cx| {
+            view.layout_observers.borrow_mut().add(token, target, callback, &view.tree.lock().unwrap()).map_err(|(error, _)| error)?;
             cx.notify();
             Ok(token)
-        })?
+        })?;
+        #[cfg(not(target_os = "macos"))]
+        {
+            update_window_detached(move |view, _, cx| {
+                let added = view.layout_observers.borrow_mut().add(token, target, callback, &view.tree.lock().unwrap());
+                match added {
+                    Ok(()) => cx.notify(),
+                    Err((error, callback)) => {
+                        callback.call(Err(error), ThreadsafeFunctionCallMode::NonBlocking);
+                    }
+                }
+            })?;
+            Ok(token)
+        }
     }
     #[napi]
     pub fn remove_layout_observer(&self, token: u32) -> Result<()> {

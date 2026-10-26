@@ -9,7 +9,6 @@ use serde_json::{json, Value};
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 #[derive(Default)]
 pub(crate) struct Observers {
-    next: u32,
     frame: u64,
     entries: HashMap<u32, Entry>,
 }
@@ -19,12 +18,36 @@ struct Entry {
     last: Option<Value>,
 }
 pub(crate) type Shared = Rc<RefCell<Observers>>;
+/// Tokens are handed out by the caller's thread, so off macOS `addLayoutObserver`
+/// returns one without waiting for the UI thread (the add is queued; see renderer.rs).
+static NEXT_TOKEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+pub(crate) fn next_token() -> Result<u32> {
+    let token = NEXT_TOKEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if token == 0 || token == u32::MAX {
+        return Err(Error::from_reason("Observer tokens exhausted"));
+    }
+    Ok(token)
+}
 impl Observers {
-    pub(crate) fn add(&mut self, target: Value, callback: ThreadsafeFunction<Value>, tree: &RetainedTree) -> Result<u32> {
+    /// Adds the observer under `token`, or hands `callback` back with the reason it was refused.
+    pub(crate) fn add(
+        &mut self,
+        token: u32,
+        target: Value,
+        callback: ThreadsafeFunction<Value>,
+        tree: &RetainedTree,
+    ) -> std::result::Result<(), (Error, ThreadsafeFunction<Value>)> {
+        if let Err(error) = self.check(&target, tree) {
+            return Err((error, callback));
+        }
+        self.entries.insert(token, Entry { target, callback, last: None });
+        Ok(())
+    }
+    fn check(&self, target: &Value, tree: &RetainedTree) -> Result<()> {
         if self.entries.len() >= 256 {
             return Err(Error::from_reason("At most 256 layout observers are supported"));
         }
-        if target != Value::Null {
+        if *target != Value::Null {
             if let Some(id) = target.as_u64() {
                 if !tree.elements.contains_key(&id) {
                     return Err(Error::from_reason("Element is not mounted"));
@@ -37,9 +60,7 @@ impl Observers {
                 return Err(Error::from_reason("Expected element ID or { testId }"));
             }
         }
-        self.next = self.next.checked_add(1).ok_or_else(|| Error::from_reason("Observer tokens exhausted"))?;
-        self.entries.insert(self.next, Entry { target, callback, last: None });
-        Ok(self.next)
+        Ok(())
     }
     pub(crate) fn remove(&mut self, token: u32) {
         self.entries.remove(&token);
