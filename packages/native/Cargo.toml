@@ -100,6 +100,11 @@ gpui_macos = { path = "../../zed/crates/gpui_macos", default-features = false, f
 [target.'cfg(any(target_os = "macos", target_os = "linux", target_os = "freebsd"))'.dependencies]
 gpui_terminal = { path = "../gpui-terminal" }
 
+# Kybern WP10: `<websurface>` uploads web frames into textures on GPUI's own device (`Window::gpu_context`), so this
+# must be the same wgpu crate gpui_wgpu uses (the downcast compares types).
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+wgpu = { version = "29.0.4", default-features = false }
+
 # Same crate GPUI uses. A .node cannot ship an exe manifest, so Windows DPI
 # awareness is set at runtime in renderer.rs instead of via windows-manifest.
 [target.'cfg(target_os = "windows")'.dependencies]

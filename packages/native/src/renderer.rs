@@ -517,7 +517,7 @@ fn update_window_without_view_detached(update: impl FnOnce(&mut gpui::Window, &m
 /// Kybern patch: wake changed islands and notify the root, without
 /// window.refresh() (which disables every cache).
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux", target_os = "freebsd"))]
-fn invalidate_islands(view: &mut GpuixView, window: &mut gpui::Window, cx: &mut gpui::Context<GpuixView>) {
+pub(crate) fn invalidate_islands(view: &mut GpuixView, window: &mut gpui::Window, cx: &mut gpui::Context<GpuixView>) {
     if gpui::kybern_motion_trace_enabled() { gpui::kybern_motion_trace(format_args!("batch")); }
     if !crate::subtree_transform::invalidate(view, window, cx) && !crate::subtree_translation::invalidate(view, window, cx) { crate::paint_replay::invalidate(view, window, cx); }
 }
