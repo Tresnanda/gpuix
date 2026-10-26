@@ -1,4 +1,5 @@
-//! Native titlebar gestures. macOS does not implement WindowControlArea hit tests.
+//! Native titlebar gestures. macOS does not implement WindowControlArea hit tests; Windows does, and moves the window
+//! natively for a press in the region that GPUI leaves unhandled.
 use std::cell::Cell;
 
 use gpui::{Div, Stateful, prelude::*};
@@ -16,6 +17,12 @@ pub(crate) fn apply(el: Stateful<Div>) -> Stateful<Div> {
         .on_mouse_down(gpui::MouseButton::Left, |event, window, cx| {
             // Controls bubble first, so a press on one has already been marked.
             if CONTROL_PRESSED.with(|pressed| pressed.get()) {
+                return;
+            }
+            // Windows moves and zooms the window itself: the region answers `HTCAPTION` (`window_control_area`), and
+            // `DefWindowProc` runs the move loop, or the maximize toggle on a double click, only for a press GPUI leaves
+            // unhandled. `start_window_move` is a no-op there, so consuming the press would leave the window stuck.
+            if cfg!(target_os = "windows") {
                 return;
             }
             if event.click_count == 2 {
