@@ -6024,6 +6024,11 @@ impl GpuixView {
         // the rest of the tree is orders of magnitude larger.
         //
         // Create handles for elements that need focus but don't have one yet.
+        // Kybern: when an element and one inside it both mount with autoFocus in
+        // the same pass (a dialog card and its search field), the inner one
+        // keeps focus. Ids ascend here and children are created before their
+        // parents, so without this the card took it and typing went nowhere.
+        let mut auto_focused: Option<u64> = None;
         for &id in &tree.focusable_ids {
             let Some(element) = tree.elements.get(&id) else {
                 continue;
@@ -6039,8 +6044,13 @@ impl GpuixView {
                 };
                 // Focus once, at creation. Re-focusing every frame would
                 // steal focus back from whatever the user clicked next.
-                if element.auto_focus {
+                let contains_focused = auto_focused.is_some_and(|inner| {
+                    std::iter::successors(tree.elements.get(&inner).and_then(|e| e.parent), |p| tree.elements.get(p).and_then(|e| e.parent))
+                        .any(|ancestor| ancestor == id)
+                });
+                if element.auto_focus && !contains_focused {
                     handle.focus(window, cx);
+                    auto_focused = Some(id);
                 }
                 self.focus_handles.insert(id, handle);
             } else if let (Some(handle), Some(index)) =
