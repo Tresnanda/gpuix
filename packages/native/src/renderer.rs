@@ -400,18 +400,35 @@ static UI_PLATFORM: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new
 // How the UI thread became per-monitor DPI aware (`enable_per_monitor_dpi`).
 #[cfg(target_os = "windows")]
 static DPI_MODE: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
-// Off macOS: the frame wake hook, also fired once when the UI thread exits so the
-// JS frame loop sees `tick() === false` without waiting for its fallback timer.
+// The call that set it (`dpiSource`), whatever the result.
+#[cfg(target_os = "windows")]
+static DPI_SOURCE: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+// Off macOS: the JS frame wake, fired once when the UI thread exits so the JS
+// frame loop sees `tick() === false` without waiting for its fallback timer.
+// Nothing else wakes it: off macOS tick() does no work, animations run on
+// `subscribeAnimationFrames`, and a per-frame wake cost 60–240 JS wakeups/s.
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
 static UI_EXIT_WAKE: std::sync::Mutex<Option<Arc<dyn Fn() + Send + Sync>>> = std::sync::Mutex::new(None);
+// The open window's served-frame counters (drawn vs callbacks-only), read by
+// `getBridgeStats` without a UI-thread round trip.
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
+static WINDOW_FRAMES: std::sync::Mutex<Option<Arc<gpui::FrameCounters>>> = std::sync::Mutex::new(None);
+// False once the window closed: queued `()` hooks then fail at the call, as the
+// waited ones do, instead of only in the log.
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
+static WINDOW_OPEN: AtomicBool = AtomicBool::new(false);
 
 /// Kybern: queue `job` on the GPUI UI thread without waiting, for hooks whose
 /// result is `()`. Commands run in order, so a later waiting call still sees
-/// its effect; a failure inside the job (the window is gone) is only logged.
+/// its effect. A closed window fails here; a failure inside the job (the window
+/// closed after the send) is logged as an error.
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
 fn send_to_ui_thread(
     job: impl FnOnce(gpui::WindowHandle<GpuixView>, &mut gpui::AsyncApp) -> anyhow::Result<()> + Send + 'static,
 ) -> Result<()> {
+    if !WINDOW_OPEN.load(Ordering::Acquire) {
+        return Err(Error::from_reason("The GPUI window is closed"));
+    }
     let sender = UI_BRIDGE
         .lock()
         .unwrap()
@@ -420,7 +437,7 @@ fn send_to_ui_thread(
     sender
         .unbounded_send(UiCommand::Run(Box::new(move |window, cx| {
             if let Err(error) = job(window, cx) {
-                log::warn!("a queued window update failed: {error:#}");
+                log::error!("a queued window update failed: {error:#}");
             }
         })))
         .map_err(|_| Error::from_reason("The GPUI UI thread is not running"))?;
@@ -669,6 +686,7 @@ enum UiCommand {
     #[cfg(all(target_os = "windows", feature = "test-support"))]
     CaptureScreenshot {
         path: String,
+        as_drawn: bool,
         response: SyncSender<std::result::Result<(), String>>,
     },
     Blur,
@@ -717,10 +735,10 @@ async fn run_ui_commands(
             UiCommand::ToggleFullscreen => {
                 window.update(cx, |_view, window, _cx| window.toggle_fullscreen())
             }
-            UiCommand::SetWindowTitle(title) => window.update(cx, move |view, window, cx| {
+            // Kybern: notify only; window.refresh() would bypass every cached island.
+            UiCommand::SetWindowTitle(title) => window.update(cx, move |view, _window, cx| {
                 view.window_title = title;
                 cx.notify();
-                window.refresh();
             }),
             UiCommand::PromptForPaths { options, deferred } => {
                 let background_executor = cx.background_executor().clone();
@@ -1047,7 +1065,17 @@ async fn run_ui_commands(
                 result
             }
             #[cfg(all(target_os = "windows", feature = "test-support"))]
-            UiCommand::CaptureScreenshot { path, response } => {
+            // Kybern: `as_drawn` saves the scene last presented, without the
+            // refresh (which rebuilds every cached island), so a stale island shows.
+            UiCommand::CaptureScreenshot { path, as_drawn: true, response } => window.update(cx, move |_view, window, _cx| {
+                let result = window
+                    .render_to_image()
+                    .map_err(|error| format!("Screenshot capture failed: {error}"))
+                    .and_then(|image| image.save(&path).map_err(|error| format!("Failed to save screenshot: {error}")));
+                response.send(result).ok();
+            }),
+            #[cfg(all(target_os = "windows", feature = "test-support"))]
+            UiCommand::CaptureScreenshot { path, as_drawn: false, response } => {
                 let error_response = response.clone();
                 let result = window.update(cx, move |_view, window, cx| {
                     cx.notify();
@@ -1493,11 +1521,13 @@ impl GpuixRenderer {
             AreDpiAwarenessContextsEqual, GetThreadDpiAwarenessContext,
             SetProcessDpiAwarenessContext, SetThreadDpiAwarenessContext,
             DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            DPI_AWARENESS_CONTEXT_SYSTEM_AWARE, DPI_AWARENESS_CONTEXT_UNAWARE,
+            DPI_AWARENESS_CONTEXT_UNAWARE_GDISCALED,
         };
 
         unsafe {
             let current = GetThreadDpiAwarenessContext();
-            let mode = if AreDpiAwarenessContextsEqual(current, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
+            let source = if AreDpiAwarenessContextsEqual(current, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
                 .as_bool()
             {
                 "already-per-monitor-v2"
@@ -1509,17 +1539,36 @@ impl GpuixRenderer {
                 // Process awareness is already locked (node/bun manifest). This thread has no HWND yet.
                 "thread-per-monitor-v2"
             } else {
-                log::warn!("per-monitor DPI awareness is unavailable: windows will be bitmap-scaled");
-                "unaware"
+                "none"
             };
+            // Record the awareness the thread really has, not only the call that
+            // succeeded: `dpiMode` is the source when it agrees with the result.
+            let actual = GetThreadDpiAwarenessContext();
+            let awareness = [
+                (DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, "per-monitor-v2"),
+                (DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE, "per-monitor"),
+                (DPI_AWARENESS_CONTEXT_SYSTEM_AWARE, "system"),
+                (DPI_AWARENESS_CONTEXT_UNAWARE_GDISCALED, "unaware-gdi-scaled"),
+                (DPI_AWARENESS_CONTEXT_UNAWARE, "unaware"),
+            ]
+            .into_iter()
+            .find(|(context, _)| AreDpiAwarenessContextsEqual(actual, *context).as_bool())
+            .map_or("unknown", |(_, name)| name);
+            let mode = if source.ends_with(awareness) { source } else { awareness };
+            if awareness != "per-monitor-v2" {
+                log::error!("per-monitor DPI awareness v2 is unavailable ({awareness}): windows may be bitmap-scaled");
+            }
             DPI_MODE.set(mode).ok();
+            DPI_SOURCE.set(source).ok();
         }
     }
 
     /// Kybern: the platform client and DPI state of the open window, for the
     /// platform checks: `platform` ("macos", "windows", "Wayland", "X11"),
-    /// `scaleFactor` (GPUI's, 1.25 at 125 %), and on Windows `dpiMode` (how
-    /// per-monitor awareness was obtained) and `windowDpi` (`GetDpiForWindow`
+    /// `scaleFactor` (GPUI's, 1.25 at 125 %), `seat` (Wayland: whether the
+    /// compositor has a wl_seat; null elsewhere), and on Windows `dpiMode` (the
+    /// thread's real awareness, named after the call that set it when they
+    /// agree), `dpiSource` (that call) and `windowDpi` (`GetDpiForWindow`
     /// equivalent: what the window's monitor reports).
     #[napi]
     pub fn get_platform_info(&self) -> Result<serde_json::Value> {
@@ -1545,14 +1594,21 @@ impl GpuixRenderer {
                 })?;
                 serde_json::json!({
                     "dpiMode": DPI_MODE.get().copied().unwrap_or("not-set"),
+                    "dpiSource": DPI_SOURCE.get().copied().unwrap_or("not-set"),
                     "windowDpi": window_dpi,
                 })
             };
             #[cfg(not(target_os = "windows"))]
             let windows = serde_json::Value::Null;
+            // Linux: whether the Wayland compositor has a wl_seat (null on X11).
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+            let seat = gpui::wayland_seat();
+            #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+            let seat: Option<bool> = None;
             return Ok(serde_json::json!({
                 "platform": platform,
                 "scaleFactor": scale_factor,
+                "seat": seat,
                 "windows": windows,
             }));
         }
@@ -1651,6 +1707,11 @@ impl GpuixRenderer {
                                 }
                             };
 
+                            if let Ok(counters) = window.update(cx, |_view, window, _cx| window.frame_counters()) {
+                                *WINDOW_FRAMES.lock().unwrap() = Some(counters);
+                            }
+                            WINDOW_OPEN.store(true, Ordering::Release);
+                            cx.on_window_closed(|_cx, _id| WINDOW_OPEN.store(false, Ordering::Release)).detach();
                             cx.spawn(async move |cx| {
                                 run_ui_commands(command_receiver, window, cx).await;
                             })
@@ -1663,7 +1724,7 @@ impl GpuixRenderer {
                         });
                 }));
                 ui_running.store(false, Ordering::Release);
-                gpui::set_frame_wake_hook(None);
+                WINDOW_OPEN.store(false, Ordering::Release);
                 if let Some(hook) = UI_EXIT_WAKE.lock().unwrap().take() {
                     hook();
                 }
@@ -1784,10 +1845,11 @@ impl GpuixRenderer {
 
 
     /// Wake JavaScript after a native frame. macOS: the display link queued one.
-    /// Windows and Linux: GPUI drew the window or ran next-frame callbacks on its
-    /// UI thread (paced by the DWM vsync thread, Wayland frame callbacks or the
-    /// X11 refresh loop), and once more when that thread exits. Returns true on
-    /// those platforms. Call tick() in the callback; it never blocks.
+    /// Windows and Linux: only when the GPUI UI thread exits, the one event
+    /// tick() reports there (it pumps nothing; animations use
+    /// subscribeAnimationFrames). Returns true on those platforms, so the JS
+    /// loop runs on wakes plus its fallback timer instead of an 8 ms poll.
+    /// Call tick() in the callback; it never blocks.
     /// Wakes coalesce while JavaScript is busy and do not keep the process alive.
     /// Pass null to clear the callback. Already queued callbacks may still arrive.
     #[napi]
@@ -1838,7 +1900,6 @@ impl GpuixRenderer {
         #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
         {
             let Some(callback) = callback else {
-                gpui::set_frame_wake_hook(None);
                 UI_EXIT_WAKE.lock().unwrap().take();
                 return Ok(true);
             };
@@ -1867,7 +1928,6 @@ impl GpuixRenderer {
                     pending.store(false, Ordering::Release);
                 }
             });
-            gpui::set_frame_wake_hook(Some(hook.clone()));
             *UI_EXIT_WAKE.lock().unwrap() = Some(hook);
             // The UI thread may have exited before the hook was in place.
             if !self.ui_running.load(Ordering::Acquire) {
@@ -1892,9 +1952,11 @@ impl GpuixRenderer {
 
     /// Kybern: UI-thread bridge and frame-wake counters since launch, for
     /// perf/bench. `bridged` is false on macOS, where hooks run on the JS thread
-    /// and the bridge counters stay 0. `servedFrames` counts GPUI frame requests
-    /// that drew or ran next-frame callbacks (Windows/Linux only; null on macOS).
-    /// Divide count deltas by the `servedFrames` delta for calls per frame.
+    /// and the bridge counters stay 0. Windows/Linux (null on macOS): this
+    /// window's frames that drew (`drawnFrames`) or only ran next-frame callbacks
+    /// (`callbackFrames`), `servedFrames` their sum, and `processServedFrames`
+    /// every window's. Divide count deltas by the `servedFrames` delta for calls
+    /// per frame. `frameWakes` counts JS wakes queued (off macOS: the exit wake).
     #[napi]
     pub fn get_bridge_stats(&self) -> serde_json::Value {
         #[cfg(target_os = "macos")]
@@ -1904,18 +1966,27 @@ impl GpuixRenderer {
             "waited": 0,
             "waitMs": 0.0,
             "servedFrames": null,
+            "drawnFrames": null,
+            "callbackFrames": null,
+            "processServedFrames": null,
             "frameWakes": FRAME_WAKES.load(std::sync::atomic::Ordering::Relaxed),
             "platform": "macos",
         });
         #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
         {
             let platform = UI_PLATFORM.get().copied().unwrap_or("unknown");
+            let (drawn, callbacks_only) = WINDOW_FRAMES.lock().unwrap().as_ref().map_or((0, 0), |counters| {
+                (counters.drawn.load(Ordering::Relaxed), counters.callbacks_only.load(Ordering::Relaxed))
+            });
             return serde_json::json!({
                 "bridged": true,
                 "sent": BRIDGE_SENT.load(Ordering::Relaxed),
                 "waited": BRIDGE_WAITED.load(Ordering::Relaxed),
                 "waitMs": BRIDGE_WAIT_NANOS.load(Ordering::Relaxed) as f64 / 1e6,
-                "servedFrames": gpui::served_frame_count(),
+                "servedFrames": drawn + callbacks_only,
+                "drawnFrames": drawn,
+                "callbackFrames": callbacks_only,
+                "processServedFrames": gpui::served_frame_count(),
                 "frameWakes": FRAME_WAKES.load(Ordering::Relaxed),
                 "platform": platform,
             });
@@ -2163,6 +2234,14 @@ impl GpuixRenderer {
     #[napi]
     pub fn resolve_key_event(&self, token: u32, prevented: bool) -> Result<()> {
         return update_window_without_view(move |window, cx| crate::key_intercept::resolve(token, prevented, window, cx));
+    }
+
+    /// Kybern: close the window as its close button would (the close guard, if
+    /// set, is asked first). With the last window gone the app quits and tick()
+    /// returns false; the platform checks use it to see the UI-exit wake.
+    #[napi]
+    pub fn close_window(&self) -> Result<()> {
+        update_window_without_view_detached(|window, _cx| crate::close_guard::request(window))
     }
 
     #[napi]
@@ -3547,12 +3626,18 @@ impl GpuixRenderer {
         Err(Error::from_reason("Unsupported operating system"))
     }
 
+    /// Kybern: `asDrawn` (default false) saves the scene as last drawn instead
+    /// of refreshing first, which would rebuild every cached island: the
+    /// platform checks use it to see a stale island. Windows and macOS only.
     #[napi]
-    pub fn capture_screenshot(&self, path: String) -> Result<()> {
+    pub fn capture_screenshot(&self, path: String, as_drawn: Option<bool>) -> Result<()> {
+        let as_drawn = as_drawn.unwrap_or(false);
         #[cfg(all(target_os = "macos", feature = "test-support"))]
         {
             let image = update_window_without_view(move |window, cx| {
-                window.refresh();
+                if !as_drawn {
+                    window.refresh();
+                }
                 window.kybern_prepare_image_snapshot(cx);
                 window.render_to_image()
             })?
@@ -3566,7 +3651,7 @@ impl GpuixRenderer {
         #[cfg(all(target_os = "windows", feature = "test-support"))]
         {
             let (response, receiver) = sync_channel(1);
-            self.send_ui_command(UiCommand::CaptureScreenshot { path, response })?;
+            self.send_ui_command(UiCommand::CaptureScreenshot { path, as_drawn, response })?;
             return recv_ui_response(receiver, "screenshot capture")?.map_err(Error::from_reason);
         }
 
@@ -3575,7 +3660,7 @@ impl GpuixRenderer {
             any(target_os = "macos", target_os = "windows")
         )))]
         {
-            let _ = path;
+            let _ = (path, as_drawn);
             Err(Error::from_reason(
                 "captureScreenshot needs a test-support build on macOS or Windows",
             ))
