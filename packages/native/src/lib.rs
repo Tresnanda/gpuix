@@ -39,6 +39,7 @@ mod markdown_model;
 mod markdown_view;
 mod layout_observer;
 mod window_drag;
+mod window_chrome;
 mod window_platform;
 mod key_intercept;
 mod close_guard;
