@@ -746,6 +746,8 @@ terminal.
 | `focus` | boolean, default `true` | `false` opens the window behind the active app, like `open -g` |
 | `show` | boolean, default `true` | `false` opens the window hidden. Call `activateWindow()` to reveal it |
 | `terminal` | boolean, default `GPUIX_TERMINAL=1` | Render inside the current terminal instead of a native window. See [Run in a terminal](#run-in-a-terminal) |
+| `windowDecorations` | `"server"` (default), `"client"` | Linux: `"client"` asks for client-side decorations, so the app draws the title bar, its buttons and the resize edges. X11 without a compositing manager keeps server ones; read the result with `getWindowChrome()` |
+| `x` / `y`, `maximized`, `display` | pixels, boolean, display id | Windows and Linux: open at a frame saved from `getWindowBounds()`. A frame no longer on a connected display opens centered. Wayland ignores the position |
 
 On macOS, `"blurred"` blurs the desktop behind the window but does not add a
 light tint. Paint a translucent light background when building a light UI:
@@ -918,6 +920,36 @@ function WindowControls() {
 `minimizeWindow()`, `zoomWindow()`, and `toggleFullscreen()` work on macOS,
 Windows, Linux, and FreeBSD. `zoomWindow()` uses the platform's native zoom or
 maximize operation. These methods are not available in the browser renderer.
+
+#### An app-drawn title bar on Windows and Linux
+
+With `titlebarTransparent: true` the app draws the whole title bar.
+
+- **Drag regions** (`windowDrag`): on Windows the region is the native caption,
+  so Windows drags, snaps, maximizes on a double click and shows the system menu
+  on a right click; controls inside it (anything clickable or focusable) keep
+  their own press. On Linux the move starts on the first drag after a press, a
+  double click runs `setTitlebarDoubleClick(action)` (`"maximize"` by default,
+  `"minimize"`, `"menu"`, `"none"`) and a right click opens the window menu.
+- **Caption buttons** (`windowControl="minimize" | "maximize" | "close"`): on
+  Windows the element answers the hit test as that caption button, so Windows
+  acts on the click itself (and shows Snap Layouts on hovering maximize) while
+  hover and press styles still apply. Give it no `onClick` there. Elsewhere the
+  prop does nothing: call `minimizeWindow()`, `zoomWindow()` or `closeWindow()`.
+- `getWindowChrome()` returns `{ platform, decorations: "server" | "client",
+  tiling, maximized, fullscreen, active, resizable, minimizable, controls:
+  { minimize, maximize, fullscreen, windowMenu }, buttonLayout: { left, right },
+  appearance: "light" | "dark", reducedMotion, bounds }` (`bounds` as `getWindowBounds()`). `buttonLayout` is the
+  desktop's button order on Linux (null elsewhere); `reducedMotion` is Windows'
+  "Animation effects" switch (null elsewhere).
+  `setWindowChromeCallback(callback)` calls back with the new state when it
+  changes; `null` stops.
+- `startWindowResize(edge)` (`"top"`, `"top-right"`, …, `"top-left"`) hands an
+  edge drag to the compositor, for client-side decorations on Linux;
+  `showWindowMenu(x, y)` opens the compositor's window menu.
+- `getWindowBounds()` returns `{ state: "windowed" | "maximized" | "fullscreen",
+  x, y, width, height, display }`: the restored frame to save and pass back as
+  window options.
 
 ### Window measurements
 

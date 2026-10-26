@@ -439,7 +439,7 @@ impl CustomElement for TextEditorElement {
             })
             .clone();
 
-        #[cfg(target_os = "macos")]
+        // Off macOS too (WP3): see the rich editor's interceptor.
         if self.key_interceptor.is_none() {
             let weak = state.downgrade();
             self.key_interceptor = Some(cx.intercept_keystrokes(move |event, window, cx| {

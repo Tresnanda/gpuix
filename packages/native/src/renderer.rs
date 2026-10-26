@@ -1736,11 +1736,18 @@ impl GpuixRenderer {
                                     origin: gpui::point(gpui::px(0.0), gpui::px(0.0)),
                                     size,
                                 }
+                            } else if let (Some(x), Some(y)) = (window_options.x, window_options.y) {
+                                // Kybern (WP3): a saved frame; GPUI centers it on its display when it is no longer on one.
+                                gpui::Bounds { origin: gpui::point(gpui::px(x as f32), gpui::px(y as f32)), size }
                             } else {
                                 crate::automation_display::centered(size, cx)
                             };
+                            let mut gpui_options = to_gpui_window_options(&window_options, bounds);
+                            if let Some(display) = window_options.display.as_deref().and_then(|uuid| crate::window_chrome::display_for(uuid, cx)) {
+                                gpui_options.display_id = Some(display);
+                            }
                             let window = match cx.open_window(
-                                to_gpui_window_options(&window_options, bounds),
+                                gpui_options,
                                 |_window, cx| {
                                     cx.new(|_| GpuixView::new(tree, callback, title, selection))
                                 },
@@ -2377,6 +2384,47 @@ impl GpuixRenderer {
     #[napi]
     pub fn close_window(&self) -> Result<()> {
         update_window_without_view_detached(|window, _cx| crate::close_guard::request(window))
+    }
+
+    /// Kybern (WP3): the title bar's window state: decorations and tiling,
+    /// maximized/fullscreen/active, supported controls, the desktop's button
+    /// layout (Linux), appearance and reduced motion (Windows). See `window_chrome.rs`.
+    #[napi]
+    pub fn get_window_chrome(&self) -> Result<serde_json::Value> {
+        return update_window_without_view(|window, cx| crate::window_chrome::chrome(window, cx));
+    }
+
+    /// Kybern (WP3): call `callback` with the new `getWindowChrome` state when it changes. `null` stops.
+    #[napi]
+    pub fn set_window_chrome_callback(&self, callback: Option<ThreadsafeFunction<serde_json::Value>>) -> Result<()> {
+        return update_window(move |_view, window, cx| crate::window_chrome::observe(callback, window, cx));
+    }
+
+    /// Kybern (WP3): the frame to save, `{ state, x, y, width, height, display }`.
+    #[napi]
+    pub fn get_window_bounds(&self) -> Result<serde_json::Value> {
+        return update_window_without_view(|window, cx| crate::window_chrome::bounds(window, cx));
+    }
+
+    /// Kybern (WP3): hand an edge or corner drag to the compositor (client-side decorations on Linux).
+    /// `top`, `top-right`, `right`, `bottom-right`, `bottom`, `bottom-left`, `left`, `top-left`.
+    #[napi]
+    pub fn start_window_resize(&self, edge: String) -> Result<()> {
+        let edge = crate::window_chrome::resize_edge(&edge)?;
+        return update_window_without_view_detached(move |window, _cx| window.start_window_resize(edge));
+    }
+
+    /// Kybern (WP3): the compositor's window menu at a window position (Linux).
+    #[napi]
+    pub fn show_window_menu(&self, x: f64, y: f64) -> Result<()> {
+        return update_window_without_view_detached(move |window, _cx| window.show_window_menu(gpui::point(gpui::px(x as f32), gpui::px(y as f32))));
+    }
+
+    /// Kybern (WP3): what a double click on a drag region does on Linux:
+    /// `maximize` (default), `minimize`, `menu` or `none`. macOS and Windows use the system's.
+    #[napi]
+    pub fn set_titlebar_double_click(&self, action: String) -> Result<()> {
+        crate::window_chrome::set_double_click(&action)
     }
 
     #[napi]
@@ -6715,6 +6763,9 @@ pub(crate) fn build_host_container(
     } else if crate::window_drag::is_control(element.events(), element.custom_props()) {
         el = crate::window_drag::control(el);
     }
+    if let Some(kind) = element.custom_props().get("windowControl").and_then(|v| v.as_str()) {
+        el = crate::window_drag::caption_button(el, kind);
+    }
 
     // Wire up events.
     // Some events (on_hover, on_aux_click) require a stateful element (.id()),
@@ -8555,6 +8606,19 @@ pub struct WindowOptions {
     pub window_background: Option<String>,
     pub traffic_light_x: Option<f64>,
     pub traffic_light_y: Option<f64>,
+    /// Kybern (WP3), Linux: `"client"` asks for client-side decorations (the app
+    /// draws the title bar and its buttons); `"server"` (default) for the
+    /// compositor's. X11 without a compositing manager always gets server ones.
+    pub window_decorations: Option<String>,
+    /// Kybern (WP3), Windows and Linux: a saved frame to open at, in GPUI's
+    /// global logical coordinates (`getWindowBounds`). Both must be set; a
+    /// frame that is no longer on a connected display opens centered.
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+    /// Open maximized, restoring to the frame above.
+    pub maximized: Option<bool>,
+    /// The display the frame was on (`getWindowBounds().display`).
+    pub display: Option<String>,
     /// Give the window key focus when it opens. `false` opens it behind the
     /// active app, like `open -g`. Ignored on Linux.
     pub focus: Option<bool>,
@@ -8591,6 +8655,11 @@ impl Default for WindowOptions {
             window_background: None,
             traffic_light_x: None,
             traffic_light_y: None,
+            window_decorations: None,
+            x: None,
+            y: None,
+            maximized: None,
+            display: None,
             focus: Some(true),
             show: Some(true),
             app_id: None,
@@ -8681,6 +8750,8 @@ fn to_gpui_window_options(
     };
     let window_bounds = if options.fullscreen.unwrap_or(false) {
         gpui::WindowBounds::Fullscreen(bounds)
+    } else if options.maximized.unwrap_or(false) {
+        gpui::WindowBounds::Maximized(bounds)
     } else {
         gpui::WindowBounds::Windowed(bounds)
     };
@@ -8703,6 +8774,11 @@ fn to_gpui_window_options(
         show: options.show.unwrap_or(true),
         app_id: options.app_id.clone(),
         display_id: crate::automation_display::display(),
+        window_decorations: match options.window_decorations.as_deref() {
+            Some("client") => Some(gpui::WindowDecorations::Client),
+            Some("server") => Some(gpui::WindowDecorations::Server),
+            _ => None,
+        },
         ..Default::default()
     };
 

@@ -127,8 +127,6 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("shift-end", SelectEnd, c),
         KeyBinding::new("cmd-left", Home, c),
         KeyBinding::new("cmd-right", End, c),
-        KeyBinding::new("ctrl-a", Home, c),
-        KeyBinding::new("ctrl-e", End, c),
         KeyBinding::new("cmd-up", DocStart, c),
         KeyBinding::new("cmd-down", DocEnd, c),
         KeyBinding::new("shift-cmd-left", SelectHome, c),
@@ -144,27 +142,40 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-backspace", DeleteToLineStart, c),
         KeyBinding::new("enter", Enter, c),
         KeyBinding::new("shift-enter", HardBreak, c),
-        KeyBinding::new("cmd-enter", HardBreak, c),
+        KeyBinding::new("secondary-enter", HardBreak, c),
         KeyBinding::new("tab", Indent, c),
         KeyBinding::new("shift-tab", Outdent, c),
         // TipTap StarterKit's shortcuts (desktop editor).
-        KeyBinding::new("cmd-b", Bold, c),
-        KeyBinding::new("cmd-i", Italic, c),
-        KeyBinding::new("shift-cmd-s", Strike, c),
-        KeyBinding::new("shift-cmd-x", Strike, c),
-        KeyBinding::new("cmd-e", InlineCode, c),
-        KeyBinding::new("alt-cmd-1", Heading1, c),
-        KeyBinding::new("alt-cmd-2", Heading2, c),
-        KeyBinding::new("alt-cmd-3", Heading3, c),
-        KeyBinding::new("alt-cmd-0", Paragraph, c),
-        KeyBinding::new("shift-cmd-8", BulletList, c),
-        KeyBinding::new("shift-cmd-7", OrderedList, c),
-        KeyBinding::new("shift-cmd-9", TaskList, c),
-        KeyBinding::new("shift-cmd-b", Blockquote, c),
-        KeyBinding::new("alt-cmd-c", CodeBlock, c),
-        KeyBinding::new("shift-cmd-v", PastePlain, c),
-        KeyBinding::new("shift-cmd-t", MakeTask, c),
+        KeyBinding::new("secondary-b", Bold, c),
+        KeyBinding::new("secondary-i", Italic, c),
+        KeyBinding::new("shift-secondary-s", Strike, c),
+        KeyBinding::new("shift-secondary-x", Strike, c),
+        KeyBinding::new("secondary-e", InlineCode, c),
+        KeyBinding::new("alt-secondary-1", Heading1, c),
+        KeyBinding::new("alt-secondary-2", Heading2, c),
+        KeyBinding::new("alt-secondary-3", Heading3, c),
+        KeyBinding::new("alt-secondary-0", Paragraph, c),
+        KeyBinding::new("shift-secondary-8", BulletList, c),
+        KeyBinding::new("shift-secondary-7", OrderedList, c),
+        KeyBinding::new("shift-secondary-9", TaskList, c),
+        KeyBinding::new("shift-secondary-b", Blockquote, c),
+        KeyBinding::new("alt-secondary-c", CodeBlock, c),
+        KeyBinding::new("shift-secondary-v", PastePlain, c),
+        KeyBinding::new("shift-secondary-t", MakeTask, c),
     ];
+    // ctrl-a/ctrl-e are Emacs line motion on macOS (and nothing else is: ctrl-a selects all
+    // on Windows and Linux, ctrl-e is inline code there), ctrl-home/ctrl-end the document
+    // ends off macOS. The formatting shortcuts above are `secondary`: cmd on macOS, ctrl elsewhere.
+    if cfg!(target_os = "macos") {
+        bindings.extend([KeyBinding::new("ctrl-a", Home, c), KeyBinding::new("ctrl-e", End, c)]);
+    } else {
+        bindings.extend([
+            KeyBinding::new("ctrl-home", DocStart, c),
+            KeyBinding::new("ctrl-end", DocEnd, c),
+            KeyBinding::new("shift-ctrl-home", SelectDocStart, c),
+            KeyBinding::new("shift-ctrl-end", SelectDocEnd, c),
+        ]);
+    }
     // ctrl-a/ctrl-e are Emacs line motion on macOS, so the shortcuts below take cmd there.
     let prefixes: &[&str] = if cfg!(target_os = "macos") { &["cmd"] } else { &["cmd", "ctrl"] };
     for prefix in prefixes {
@@ -674,7 +685,8 @@ impl CustomElement for RichEditorElement {
                 cx.new(move |cx| RichEditorState::new(id, focus, callback, cx))
             })
             .clone();
-        #[cfg(target_os = "macos")]
+        // Off macOS too (WP3): the interceptor, `key_intercept`'s queue and its replay all run on
+        // the GPUI UI thread, and JS answers through `resolveKeyEvent` on the same thread.
         if self.key_interceptor.is_none() {
             let weak = state.downgrade();
             self.key_interceptor = Some(cx.intercept_keystrokes(move |event, window, cx| {
