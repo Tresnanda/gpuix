@@ -99,6 +99,7 @@ pub(crate) fn chrome(window: &gpui::Window, cx: &gpui::App) -> serde_json::Value
         "buttonLayout": layout.map(|layout| serde_json::json!({ "left": buttons(&layout.left), "right": buttons(&layout.right) })),
         "appearance": appearance,
         "reducedMotion": reduced_motion(),
+        "bounds": bounds(window, cx),
     })
 }
 
@@ -147,8 +148,10 @@ thread_local! {
     static OBSERVERS: std::cell::RefCell<Vec<gpui::Subscription>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// Call `callback` (no payload; JS re-reads `chrome`) when the window's bounds,
-/// activation, appearance or the desktop's button layout change. `None` stops.
+/// Call `callback` with the new `chrome` when the window's bounds, activation,
+/// appearance or the desktop's button layout change, so JS follows the window
+/// without a waited bridge call per change. Unchanged states are not sent.
+/// `None` stops.
 pub(crate) fn observe(
     callback: Option<napi::threadsafe_function::ThreadsafeFunction<serde_json::Value>>,
     window: &mut gpui::Window,
@@ -160,10 +163,16 @@ pub(crate) fn observe(
         return;
     };
     let callback = std::sync::Arc::new(callback);
+    let last = std::rc::Rc::new(std::cell::RefCell::new(serde_json::Value::Null));
     let notify = move || {
         let callback = callback.clone();
-        move |_: &mut GpuixView, _: &mut gpui::Window, _: &mut gpui::Context<GpuixView>| {
-            callback.call(Ok(serde_json::Value::Null), ThreadsafeFunctionCallMode::NonBlocking);
+        let last = last.clone();
+        move |_: &mut GpuixView, window: &mut gpui::Window, cx: &mut gpui::Context<GpuixView>| {
+            let state = chrome(window, cx);
+            if *last.borrow() != state {
+                *last.borrow_mut() = state.clone();
+                callback.call(Ok(state), ThreadsafeFunctionCallMode::NonBlocking);
+            }
         }
     };
     let subscriptions = vec![

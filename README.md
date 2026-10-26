@@ -939,11 +939,11 @@ With `titlebarTransparent: true` the app draws the whole title bar.
 - `getWindowChrome()` returns `{ platform, decorations: "server" | "client",
   tiling, maximized, fullscreen, active, resizable, minimizable, controls:
   { minimize, maximize, fullscreen, windowMenu }, buttonLayout: { left, right },
-  appearance: "light" | "dark", reducedMotion }`. `buttonLayout` is the
+  appearance: "light" | "dark", reducedMotion, bounds }` (`bounds` as `getWindowBounds()`). `buttonLayout` is the
   desktop's button order on Linux (null elsewhere); `reducedMotion` is Windows'
   "Animation effects" switch (null elsewhere).
-  `setWindowChromeCallback(callback)` calls back when any of it may have
-  changed; `null` stops.
+  `setWindowChromeCallback(callback)` calls back with the new state when it
+  changes; `null` stops.
 - `startWindowResize(edge)` (`"top"`, `"top-right"`, …, `"top-left"`) hands an
   edge drag to the compositor, for client-side decorations on Linux;
   `showWindowMenu(x, y)` opens the compositor's window menu.

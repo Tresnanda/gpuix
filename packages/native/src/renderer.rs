@@ -2259,7 +2259,7 @@ impl GpuixRenderer {
         return update_window_without_view(|window, cx| crate::window_chrome::chrome(window, cx));
     }
 
-    /// Kybern (WP3): call `callback` when anything `getWindowChrome` reports may have changed. `null` stops.
+    /// Kybern (WP3): call `callback` with the new `getWindowChrome` state when it changes. `null` stops.
     #[napi]
     pub fn set_window_chrome_callback(&self, callback: Option<ThreadsafeFunction<serde_json::Value>>) -> Result<()> {
         return update_window(move |_view, window, cx| crate::window_chrome::observe(callback, window, cx));
