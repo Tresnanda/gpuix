@@ -2827,6 +2827,30 @@ impl GpuixRenderer {
     }
     #[napi]
     pub fn acknowledge_window_state(&self) { crate::idle_memory::acknowledge_window_state(); }
+    /// Kybern, macOS: what the frame watchdog saw since launch (`gpui_macos`
+    /// window.rs): visible windows found without frames (`stalls`), the ones
+    /// it repaired, the last stall in words, and Metal draws that got no
+    /// drawable (`droppedFrames`), waited over 100 ms for one, and the longest
+    /// wait. A stall also sends a window-state event. Null elsewhere.
+    #[napi]
+    pub fn get_frame_watchdog(&self) -> serde_json::Value {
+        #[cfg(target_os = "macos")]
+        {
+            let report = gpui_macos::frame_watchdog_report();
+            return serde_json::json!({
+                "frames": report.frames,
+                "stalls": report.stalls,
+                "repairs": report.repairs,
+                "lastStall": report.last_stall,
+                "droppedFrames": report.dropped_frames,
+                "representedFrames": report.represented_frames,
+                "slowDrawables": report.slow_drawables,
+                "maxDrawableWaitMs": report.max_drawable_wait_us as f64 / 1000.0,
+            });
+        }
+        #[cfg(not(target_os = "macos"))]
+        serde_json::Value::Null
+    }
     /// Release what this window's next frame can rebuild (path target, cached
     /// instance buffers, backdrop scratch, passive region target; with
     /// `{ queue: true }` also the command queue) and collect the private
