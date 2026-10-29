@@ -2831,7 +2831,10 @@ impl GpuixRenderer {
     /// window.rs): visible windows found without frames (`stalls`), the ones
     /// it repaired, the last stall in words, and Metal draws that got no
     /// drawable (`droppedFrames`), waited over 100 ms for one, and the longest
-    /// wait. A stall also sends a window-state event. Null elsewhere.
+    /// wait; drawable starvation episodes (the compositor held every drawable)
+    /// begun and ended, the draws skipped instead of blocking, the layer kicks,
+    /// and the last episode in words. A stall, a first dropped drawable and a
+    /// starvation beginning or ending send a window-state event. Null elsewhere.
     #[napi]
     pub fn get_frame_watchdog(&self) -> serde_json::Value {
         #[cfg(target_os = "macos")]
@@ -2846,6 +2849,11 @@ impl GpuixRenderer {
                 "representedFrames": report.represented_frames,
                 "slowDrawables": report.slow_drawables,
                 "maxDrawableWaitMs": report.max_drawable_wait_us as f64 / 1000.0,
+                "drawableStarvations": report.drawable_starvations,
+                "drawableRecoveries": report.drawable_recoveries,
+                "starvedSkips": report.starved_skips,
+                "drawableKicks": report.drawable_kicks,
+                "lastStarvation": report.last_starvation,
             });
         }
         #[cfg(not(target_os = "macos"))]
