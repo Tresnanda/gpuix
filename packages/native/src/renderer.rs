@@ -2590,7 +2590,7 @@ impl GpuixRenderer {
     }
     #[napi]
     pub fn acknowledge_animation_frame(&self, token: u32) -> Result<()> {
-        update_window_detached(move |view, _, _| crate::frame_clock::ack(&view.frame_clock, token))
+        update_window_detached(move |view, window, _| crate::frame_clock::ack(&view.frame_clock, token, window))
     }
     #[napi]
     pub fn unsubscribe_animation_frames(&self, token: u32) -> Result<()> {
