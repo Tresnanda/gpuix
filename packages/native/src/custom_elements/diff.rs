@@ -273,6 +273,8 @@ impl CustomElement for DiffElement {
         let metrics = theme.metrics;
 
         if data.rows.is_empty() {
+            self.list_state = None;
+            self.list_metrics = None;
             // Through `custom_surface` like the non-empty branch, or an empty
             // diff would be the one state with no automation bounds and no
             // click or hover events.
@@ -346,7 +348,7 @@ impl CustomElement for DiffElement {
                     data.rows.len(),
                     px(crate::diff::estimated_row_height(&data.rows, &metrics)),
                 );
-                if anchor.item_ix > 0 && !data.rows.is_empty() {
+                if !data.rows.is_empty() {
                     let mut anchor = anchor;
                     anchor.item_ix = anchor.item_ix.min(data.rows.len() - 1);
                     state.scroll_to(anchor);
@@ -488,6 +490,10 @@ impl CustomElement for DiffElement {
             "mouseLeave",
             "fileDrop",
         ]
+    }
+
+    fn virtual_list_state(&self) -> Option<gpui::ListState> {
+        self.list_state.clone()
     }
 
     fn destroy(&mut self) {

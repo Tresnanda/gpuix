@@ -230,6 +230,11 @@ pub trait CustomElement: 'static {
     /// Clean up resources (GPUI entities, subscriptions, etc.)
     fn destroy(&mut self);
 
+    /// The exact live scroll anchor for a custom element backed by a GPUI list.
+    fn virtual_list_state(&self) -> Option<gpui::ListState> {
+        None
+    }
+
     /// Current live GPU image on `<img>`, if any.
     fn live_image(&self) -> Option<std::sync::Arc<gpui::RenderImage>> {
         None
@@ -389,7 +394,12 @@ impl CustomElementRegistry {
             events: &filtered,
             ..ctx
         };
-        entry.element.render(ctx, window, cx)
+        let id = ctx.id;
+        let rendered = entry.element.render(ctx, window, cx);
+        // Cached islands can build after the root synced its registries. Publish
+        // here too, after the adapter has reset measurements for new props.
+        crate::renderer::sync_custom_list_state(id, entry.element.virtual_list_state());
+        rendered
     }
 
     /// Store a decoded image on an `<img>` host node, creating the adapter if needed.
@@ -404,9 +414,20 @@ impl CustomElementRegistry {
         Ok(entry.element.replace_live_image(image))
     }
 
+    pub(crate) fn virtual_list_state(&self, id: u64) -> Option<gpui::ListState> {
+        self.instances.get(&id)?.element.virtual_list_state()
+    }
+
+    pub(crate) fn virtual_list_states(&self) -> impl Iterator<Item = (u64, gpui::ListState)> + '_ {
+        self.instances.iter().filter_map(|(&id, entry)| {
+            entry.element.virtual_list_state().map(|state| (id, state))
+        })
+    }
+
     /// Called when React destroys an element.
     pub fn destroy(&mut self, id: u64) {
         if let Some(mut entry) = self.instances.remove(&id) {
+            crate::renderer::sync_custom_list_state(id, None);
             entry.element.destroy();
         }
     }
@@ -437,6 +458,7 @@ impl CustomElementRegistry {
             {
                 window.drop_image(image).ok();
             }
+            crate::renderer::sync_custom_list_state(id, None);
             entry.element.destroy();
         }
     }

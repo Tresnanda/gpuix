@@ -257,6 +257,21 @@ pub(crate) fn queue_virtual_list_scroll(id: u64, index: usize, offset_in_item: f
     });
 }
 
+/// Publish the custom adapter's live list after its data/metrics reset. A queued
+/// restore must be applied here, before the returned list performs layout.
+pub(crate) fn sync_custom_list_state(id: u64, state: Option<gpui::ListState>) {
+    if let Some(state) = state {
+        if let Some(offset) = PENDING_VIRTUAL_LIST_SCROLLS.with(|cell| cell.borrow_mut().remove(&id)) {
+            state.scroll_to(offset);
+        }
+        VIRTUAL_LIST_STATES.with(|cell| cell.borrow_mut().insert(id, state));
+    } else {
+        // The view can also drop during thread-local application teardown.
+        let _ = VIRTUAL_LIST_STATES.try_with(|cell| cell.borrow_mut().remove(&id));
+        let _ = PENDING_VIRTUAL_LIST_SCROLLS.try_with(|cell| cell.borrow_mut().remove(&id));
+    }
+}
+
 fn parse_debug_frame_overlay_mode_str(
     mode: &str,
 ) -> std::result::Result<gpui::DebugFrameOverlayMode, String> {
@@ -3252,7 +3267,7 @@ impl GpuixRenderer {
         }
     }
 
-    /// The logical scroll anchor of a `<virtual-list>`:
+    /// The logical scroll anchor of a `<virtual-list>` or scrolling `<diff>`:
     /// `[itemIndex, offsetInItemPx, viewportHeightPx]`, or null for anything
     /// else. `itemIndex == item count` is gpui's at-end sentinel.
     ///
@@ -5334,7 +5349,11 @@ impl GpuixView {
         offset_in_item: f32,
     ) -> bool {
         if !self.virtual_lists.contains_key(&id) {
-            return false;
+            if self.custom_registry.virtual_list_state(id).is_none() {
+                return false;
+            }
+            queue_virtual_list_scroll(id, index, offset_in_item);
+            return true;
         }
         queue_virtual_list_scroll(id, index, offset_in_item);
         emit_event_full(&self.event_callback, id, "visibleRange", |payload| {
@@ -5351,7 +5370,7 @@ impl GpuixView {
     /// list resting at its very end); the viewport height is what lets a
     /// caller convert that into a position relative to the trailing rows.
     pub(crate) fn virtual_list_scroll_top(&self, id: u64) -> Option<[f64; 3]> {
-        let state = &self.virtual_lists.get(&id)?.state;
+        let state = self.list_state(id)?;
         let top = state.logical_scroll_top();
         Some([
             top.item_ix as f64,
@@ -5361,21 +5380,16 @@ impl GpuixView {
     }
 
     pub(crate) fn set_virtual_list_offset(&self, id: u64, x: f32, y: f32) -> bool {
-        let Some(entry) = self.virtual_lists.get(&id) else {
+        let Some(state) = self.list_state(id) else {
             return false;
         };
-        entry
-            .state
+        state
             .set_offset_from_scrollbar(gpui::point(gpui::px(x), gpui::px(y)));
         true
     }
 
     pub(crate) fn virtual_list_offset(&self, id: u64) -> Option<[f64; 2]> {
-        let offset = self
-            .virtual_lists
-            .get(&id)?
-            .state
-            .scroll_px_offset_for_scrollbar();
+        let offset = self.list_state(id)?.scroll_px_offset_for_scrollbar();
         Some([
             f64::from(f32::from(offset.x)),
             f64::from(f32::from(offset.y)),
@@ -6186,6 +6200,9 @@ impl PendingFocus {
 
 impl Drop for GpuixView {
     fn drop(&mut self) {
+        for id in self.observed_scrolls().into_keys() {
+            sync_custom_list_state(id, None);
+        }
         self.syntax_documents.lock().unwrap().close();
         self.markdown_documents.lock().unwrap().close();
         self.layout_observers.borrow_mut().close();
@@ -6243,7 +6260,7 @@ impl gpui::Render for GpuixView {
         self.scroll_handles
             .retain(|id, _| tree.elements.contains_key(id));
         self.virtual_lists
-            .retain(|id, _| tree.elements.contains_key(id));
+            .retain(|id, _| tree.elements.get(id).is_some_and(|element| element.element_type == "virtual-list"));
         self.islands.prune(&tree);
         // Pruned by listener, not existence: dropping `onLayout` and adding it
         // back reports the size again, like a fresh observer.
@@ -6381,9 +6398,7 @@ impl gpui::Render for GpuixView {
         VIRTUAL_LIST_STATES.with(|cell| {
             let mut states = cell.borrow_mut();
             states.clear();
-            for (&id, entry) in &self.virtual_lists {
-                states.insert(id, entry.state.clone());
-            }
+            states.extend(self.observed_scrolls());
         });
         // One-shot: a queued scroll for a list that did not build this frame
         // would otherwise fire on some later frame, against child indices that
@@ -9557,7 +9572,13 @@ fn check_font(bytes: &[u8]) -> std::result::Result<(), String> {
 }
 
 impl GpuixView {
+    fn list_state(&self, id: u64) -> Option<gpui::ListState> {
+        self.virtual_lists.get(&id).map(|entry| entry.state.clone())
+            .or_else(|| self.custom_registry.virtual_list_state(id))
+    }
+
     pub(crate) fn observed_scrolls(&self) -> std::collections::HashMap<u64, gpui::ListState> {
-        self.virtual_lists.iter().map(|(id, entry)| (*id, entry.state.clone())).collect()
+        self.virtual_lists.iter().map(|(id, entry)| (*id, entry.state.clone()))
+            .chain(self.custom_registry.virtual_list_states()).collect()
     }
 }
