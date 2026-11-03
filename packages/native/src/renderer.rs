@@ -2622,26 +2622,31 @@ impl GpuixRenderer {
     }
     #[napi]
     pub fn release_syntax_document(&self, id: String) -> Result<()> {
-        let result = update_window_detached(move |view, _, _| view.syntax_documents.lock().unwrap().release(&id));
+        // On the registry itself, like create and update: queued to the UI thread, a release could land after a
+        // create sent later and leave its bytes counted against the budget.
+        let registry = self.syntax_documents()?;
+        registry.lock().unwrap().release(&id);
         crate::large_alloc::code_small_request();
-        result
+        Ok(())
     }
     #[napi]
     pub fn get_syntax_document_text(&self, id: String, revision: u32) -> Result<String> {
-        update_window(move |view, _, _| view.syntax_documents.lock().unwrap().source(&id, revision))?
+        self.syntax_documents()?.lock().unwrap().source(&id, revision)
     }
     #[napi]
     pub fn get_syntax_document_stats(&self) -> Result<serde_json::Value> {
-        update_window(|view, _, _| view.syntax_documents.lock().unwrap().stats())
+        Ok(self.syntax_documents()?.lock().unwrap().stats())
     }
     #[napi]
     pub fn set_input_decorations(&self, element_id: f64, decorations: serde_json::Value, expected_value: String) -> Result<()> {
         let id = to_element_id(element_id)?;
         #[cfg(target_os = "macos")]
         return update_window_without_view(move |_, cx| crate::custom_elements::input::set_input_decorations(id, decorations, expected_value, cx))?;
-        // Kybern: queued, not waited for: the composer sets them on every keystroke. A refusal (the input changed
-        // before they arrived, or is composing) is the expected outcome when typing outruns JS; the next change sets
-        // them again.
+        // Kybern: queued, not waited for: the composer sets them on every keystroke. Malformed decorations still throw
+        // here; a refusal on the UI thread (the input changed before they arrived, or is composing) is the expected
+        // outcome when typing outruns JS, and the next change sets them again.
+        #[cfg(not(target_os = "macos"))]
+        crate::custom_elements::input::validate_input_decorations(&decorations)?;
         #[cfg(not(target_os = "macos"))]
         update_window_without_view_detached(move |_, cx| {
             if let Err(error) = crate::custom_elements::input::set_input_decorations(id, decorations, expected_value, cx) {
@@ -2865,21 +2870,24 @@ impl GpuixRenderer {
     }
     #[napi]
     pub fn release_markdown_document(&self, id: String) -> Result<()> {
-        let result = update_window_detached(move |view, _, _| view.markdown_documents.lock().unwrap().release(&id));
+        // On the registry itself, like create and update: queued to the UI thread, a release could land after a
+        // create sent later and leave its bytes counted against the budget.
+        let registry = self.markdown_documents()?;
+        registry.lock().unwrap().release(&id);
         crate::large_alloc::code_small_request();
-        result
+        Ok(())
     }
     #[napi]
     pub fn get_markdown_document_text(&self, id: String, revision: u32) -> Result<String> {
-        update_window(move |view, _, _| view.markdown_documents.lock().unwrap().source(&id, revision))?
+        self.markdown_documents()?.lock().unwrap().source(&id, revision)
     }
     #[napi]
     pub fn get_markdown_document_layout(&self, id: String, revision: u32) -> Result<serde_json::Value> {
-        update_window(move |view, _, _| view.markdown_documents.lock().unwrap().layout(&id, revision))?
+        self.markdown_documents()?.lock().unwrap().layout(&id, revision)
     }
     #[napi]
     pub fn get_markdown_document_stats(&self) -> Result<serde_json::Value> {
-        update_window(|view, _, _| view.markdown_documents.lock().unwrap().stats())
+        Ok(self.markdown_documents()?.lock().unwrap().stats())
     }
     #[napi]
     pub fn has_rich_editor_image(&self, src: String) -> Result<bool> {

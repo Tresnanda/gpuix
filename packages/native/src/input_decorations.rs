@@ -41,6 +41,41 @@ struct DecorationRequest {
     icon: Option<IconRequest>,
 }
 
+/// The checks that need no input state. Off macOS the apply is queued to the UI thread, so these run at the call
+/// first and still throw there.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+pub(crate) fn validate_input_decorations(value: &serde_json::Value) -> napi::Result<()> {
+    let requests: Vec<DecorationRequest> = serde_json::from_value(value.clone()).map_err(|e| napi::Error::from_reason(e.to_string()))?;
+    if requests.len() > 4096 { return Err(napi::Error::from_reason("At most 4096 decorations are supported")); }
+    let mut ids = std::collections::HashSet::new();
+    for request in &requests { check_decoration(request, &mut ids)?; }
+    Ok(())
+}
+
+fn check_decoration(request: &DecorationRequest, ids: &mut std::collections::HashSet<String>) -> napi::Result<()> {
+    let style = &request.style;
+    for color in [&style.color, &style.background_color].into_iter().flatten() {
+        if crate::color::parse_color(color).is_none() { return Err(napi::Error::from_reason("Invalid decoration color")); }
+    }
+    if style.font_weight.is_some_and(|v| !v.is_finite() || !(100.0..=900.0).contains(&v)) ||
+        style.font_style.as_ref().is_some_and(|v| v != "normal" && v != "italic") {
+        return Err(napi::Error::from_reason("Invalid decoration font style"));
+    }
+    if style.padding_x.is_some_and(|v| v != 0.0) {
+        return Err(napi::Error::from_reason("Input runs do not support layout paddingX"));
+    }
+    if [style.border_radius, style.background_outset_x].into_iter().flatten().any(|v| !v.is_finite() || v < 0.0) {
+        return Err(napi::Error::from_reason("Decoration radius and outset must be finite and nonnegative"));
+    }
+    if let Some(id) = &request.id {
+        if id.is_empty() || !ids.insert(id.clone()) { return Err(napi::Error::from_reason("Decoration IDs must be unique and nonempty")); }
+    }
+    if let Some(spec) = &request.icon {
+        if !spec.size.is_finite() || spec.size <= 0.0 || spec.size > 64.0 { return Err(napi::Error::from_reason("Invalid icon size")); }
+    }
+    Ok(())
+}
+
 pub(crate) fn set_input_decorations(id: u64, value: serde_json::Value, expected: String, cx: &mut gpui::App) -> napi::Result<()> {
     crate::kybern_icon::set_renderer(cx.svg_renderer());
     let requests: Vec<DecorationRequest> = serde_json::from_value(value).map_err(|e| napi::Error::from_reason(e.to_string()))?;
@@ -53,26 +88,10 @@ pub(crate) fn set_input_decorations(id: u64, value: serde_json::Value, expected:
         for request in requests {
             let range = checked_range(&state.content, request.start, request.end)?;
             if range.is_empty() { return Err(napi::Error::from_reason("Decoration ranges must be nonempty")); }
+            check_decoration(&request, &mut ids)?;
             let style = request.style;
-            for color in [&style.color, &style.background_color].into_iter().flatten() {
-                if crate::color::parse_color(color).is_none() { return Err(napi::Error::from_reason("Invalid decoration color")); }
-            }
-            if style.font_weight.is_some_and(|v| !v.is_finite() || !(100.0..=900.0).contains(&v)) ||
-                style.font_style.as_ref().is_some_and(|v| v != "normal" && v != "italic") {
-                return Err(napi::Error::from_reason("Invalid decoration font style"));
-            }
-            if style.padding_x.is_some_and(|v| v != 0.0) {
-                return Err(napi::Error::from_reason("Input runs do not support layout paddingX"));
-            }
-            if [style.border_radius, style.background_outset_x].into_iter().flatten().any(|v| !v.is_finite() || v < 0.0) {
-                return Err(napi::Error::from_reason("Decoration radius and outset must be finite and nonnegative"));
-            }
-            if let Some(id) = &request.id {
-                if id.is_empty() || !ids.insert(id.clone()) { return Err(napi::Error::from_reason("Decoration IDs must be unique and nonempty")); }
-            }
             let icon = match request.icon {
                 Some(spec) => {
-                    if !spec.size.is_finite() || spec.size <= 0.0 || spec.size > 64.0 { return Err(napi::Error::from_reason("Invalid icon size")); }
                     let image = crate::kybern_icon::image(&spec.svg, &spec.color).ok_or_else(|| napi::Error::from_reason("The icon could not be drawn"))?;
                     Some(IconDeco { key: format!("{}\u{1}{}", spec.color, spec.svg), image, font: spec.font, size: spec.size })
                 }
