@@ -1203,6 +1203,10 @@ pub struct GpuixRenderer {
     /// so `tick()` cannot pump it; it only observes this flag.
     #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
     ui_running: Arc<AtomicBool>,
+    /// Kybern: the window's document registries, fetched once. They are `Arc<Mutex<_>>`, so JS can use them without
+    /// a UI-thread round trip; off macOS that round trip waited out a frame on every streamed Markdown update.
+    markdown_registry: Mutex<std::sync::Weak<Mutex<crate::markdown_document::Registry>>>,
+    syntax_registry: Mutex<std::sync::Weak<Mutex<crate::syntax_document::Registry>>>,
 }
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
@@ -1417,7 +1421,29 @@ impl GpuixRenderer {
             ui_commands: Mutex::new(None),
             #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
             ui_running: Arc::new(AtomicBool::new(false)),
+            markdown_registry: Mutex::new(std::sync::Weak::new()),
+            syntax_registry: Mutex::new(std::sync::Weak::new()),
         }
+    }
+
+    /// The open window's Markdown document registry; asks the UI thread only until one is known (or after the window
+    /// that owned it closed).
+    fn markdown_documents(&self) -> Result<crate::markdown_document::Shared> {
+        if let Some(registry) = self.markdown_registry.lock().unwrap().upgrade() {
+            return Ok(registry);
+        }
+        let registry = update_window(|view, _, _| view.markdown_documents.clone())?;
+        *self.markdown_registry.lock().unwrap() = Arc::downgrade(&registry);
+        Ok(registry)
+    }
+
+    fn syntax_documents(&self) -> Result<crate::syntax_document::Shared> {
+        if let Some(registry) = self.syntax_registry.lock().unwrap().upgrade() {
+            return Ok(registry);
+        }
+        let registry = update_window(|view, _, _| view.syntax_documents.clone())?;
+        *self.syntax_registry.lock().unwrap() = Arc::downgrade(&registry);
+        Ok(registry)
     }
 
     /// Initialize GPUI using the native event-loop architecture for this OS.
@@ -2586,12 +2612,12 @@ impl GpuixRenderer {
     }
     #[napi]
     pub fn create_syntax_document(&self, options: serde_json::Value) -> Result<napi::bindgen_prelude::AsyncTask<crate::syntax_document::ParseTask>> {
-        let registry = update_window(|view, _, _| view.syntax_documents.clone())?;
+        let registry = self.syntax_documents()?;
         Ok(napi::bindgen_prelude::AsyncTask::new(crate::syntax_document::Registry::prepare(registry, None, options)?))
     }
     #[napi]
     pub fn update_syntax_document(&self, id: String, options: serde_json::Value) -> Result<napi::bindgen_prelude::AsyncTask<crate::syntax_document::ParseTask>> {
-        let registry = update_window(|view, _, _| view.syntax_documents.clone())?;
+        let registry = self.syntax_documents()?;
         Ok(napi::bindgen_prelude::AsyncTask::new(crate::syntax_document::Registry::prepare(registry, Some(id), options)?))
     }
     #[napi]
@@ -2829,12 +2855,12 @@ impl GpuixRenderer {
 
     #[napi]
     pub fn create_markdown_document(&self, options: serde_json::Value) -> Result<napi::bindgen_prelude::AsyncTask<crate::markdown_document::ParseTask>> {
-        let registry = update_window(|view, _, _| view.markdown_documents.clone())?;
+        let registry = self.markdown_documents()?;
         Ok(napi::bindgen_prelude::AsyncTask::new(crate::markdown_document::Registry::prepare(registry, None, options)?))
     }
     #[napi]
     pub fn update_markdown_document(&self, id: String, options: serde_json::Value) -> Result<napi::bindgen_prelude::AsyncTask<crate::markdown_document::ParseTask>> {
-        let registry = update_window(|view, _, _| view.markdown_documents.clone())?;
+        let registry = self.markdown_documents()?;
         Ok(napi::bindgen_prelude::AsyncTask::new(crate::markdown_document::Registry::prepare(registry, Some(id), options)?))
     }
     #[napi]
