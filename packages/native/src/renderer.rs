@@ -733,10 +733,10 @@ fn full_invalidate() -> bool {
 const BOUNDS_FRAME_WAIT: Duration = Duration::from_millis(250);
 
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
-/// Answer a bounds query after the next frame, which lays out what JS just committed. A minimized or hidden window
-/// draws no frame (Windows; Wayland sends no frame callback), and the caller would time out after 2 seconds and throw
-/// (the composer reads its card's width while rendering), so after `BOUNDS_FRAME_WAIT` the last laid-out bounds are
-/// sent instead, as macOS always does. Both paths run on the UI thread, where the bounds live.
+/// Answer the automation bounds query (the checks' `getAutomationTree`) after the next frame. A minimized or hidden
+/// window draws no frame (Windows; Wayland sends no frame callback), and the caller would time out after 2 seconds and
+/// throw, so after `BOUNDS_FRAME_WAIT` the last laid-out bounds are sent instead, as macOS always does. Both paths run
+/// on the UI thread, where the bounds live. `getElementBounds`, which the app calls while rendering, answers at once.
 fn answer_after_frame<T: 'static>(
     response: std::sync::mpsc::SyncSender<T>,
     read: impl Fn() -> T + 'static,
@@ -960,13 +960,14 @@ async fn run_ui_commands(
                     window.on_next_frame(move |_window, _cx| answer());
                 })
             }
+            // Kybern: the last painted bounds, at once, as macOS answers. GPUI runs next-frame callbacks before it draws,
+            // so the old wait for the next frame answered with these same bounds; its `window.refresh()` only made the
+            // frame after every query a full redraw with each cached island off. The composer and the dock read bounds
+            // while rendering, so typing into a long thread redrew the whole window per keystroke and starved the UI
+            // thread (2-3 s keystroke latency and 2 s bridge timeouts on Windows).
             UiCommand::GetElementBounds { id, response } => {
-                let answer = answer_after_frame(response, move || crate::automation::get_bounds(id), cx);
-                window.update(cx, move |_view, window, cx| {
-                    cx.notify();
-                    window.refresh();
-                    window.on_next_frame(move |_window, _cx| answer());
-                })
+                response.send(crate::automation::get_bounds(id)).ok();
+                Ok(())
             }
             UiCommand::FocusElement(id) => window.update(cx, move |view, window, cx| {
                 view.request_focus(id, window, cx);
@@ -2425,10 +2426,28 @@ impl GpuixRenderer {
         ))
     }
 
-    /// Run the native zoom or maximize operation.
+    /// Kybern: answer an intercepted key (`interceptKeys`). Queued, not waited for: the UI thread already holds the key
+    /// and replays it when the answer arrives, so JS has nothing to wait for. Off macOS a waited call threw after 2 s
+    /// whenever the UI thread was busy, and the throw escaped the key handler as an uncaught error.
     #[napi]
     pub fn resolve_key_event(&self, token: u32, prevented: bool) -> Result<()> {
-        return update_window_without_view(move |window, cx| crate::key_intercept::resolve(token, prevented, window, cx));
+        update_window_without_view_detached(move |window, cx| crate::key_intercept::resolve(token, prevented, window, cx))
+    }
+
+    /// Kybern (checks): keep the GPUI UI thread busy for `ms` milliseconds (at most 10 s), queued behind the commands
+    /// already sent, as a slow frame would. Off macOS only: on macOS the UI runs on the JS thread.
+    #[napi]
+    pub fn stall_ui_thread(&self, ms: u32) -> Result<()> {
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
+        return send_to_ui_thread(move |_window, _cx| {
+            std::thread::sleep(Duration::from_millis(u64::from(ms.min(10_000))));
+            Ok(())
+        });
+        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "freebsd")))]
+        {
+            let _ = ms;
+            Err(Error::from_reason("stallUiThread needs a separate UI thread (Linux and Windows)"))
+        }
     }
 
     /// Kybern: close the window as its close button would (the close guard, if
@@ -2592,7 +2611,17 @@ impl GpuixRenderer {
     #[napi]
     pub fn set_input_decorations(&self, element_id: f64, decorations: serde_json::Value, expected_value: String) -> Result<()> {
         let id = to_element_id(element_id)?;
-        update_window_without_view(move |_, cx| crate::custom_elements::input::set_input_decorations(id, decorations, expected_value, cx))?
+        #[cfg(target_os = "macos")]
+        return update_window_without_view(move |_, cx| crate::custom_elements::input::set_input_decorations(id, decorations, expected_value, cx))?;
+        // Kybern: queued, not waited for: the composer sets them on every keystroke. A refusal (the input changed
+        // before they arrived, or is composing) is the expected outcome when typing outruns JS; the next change sets
+        // them again.
+        #[cfg(not(target_os = "macos"))]
+        update_window_without_view_detached(move |_, cx| {
+            if let Err(error) = crate::custom_elements::input::set_input_decorations(id, decorations, expected_value, cx) {
+                log::debug!("input decorations not applied: {error}");
+            }
+        })
     }
     #[napi]
     pub fn hit_test_input_decoration(&self, element_id: f64, x: f64, y: f64) -> Result<Option<String>> {
@@ -2601,7 +2630,29 @@ impl GpuixRenderer {
     }
     #[napi]
     pub fn subscribe_animation_frames(&self, callback: ThreadsafeFunction<serde_json::Value>) -> Result<u32> {
-        update_window(move |view, window, _| crate::frame_clock::add(view.frame_clock.clone(), callback, window))?
+        #[cfg(target_os = "macos")]
+        return update_window(move |view, window, _| crate::frame_clock::add(view.frame_clock.clone(), callback, window))?;
+        // Kybern: queued, not waited for (see `frame_clock::add_with_token`); an acknowledge or unsubscribe sent later
+        // runs after it, in order.
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "freebsd"))]
+        {
+            static NEXT_FRAME_TOKEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let token = NEXT_FRAME_TOKEN.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+            if token == 0 {
+                return Err(Error::from_reason("Frame tokens exhausted"));
+            }
+            update_window_detached(move |view, window, _| {
+                if let Err(error) = crate::frame_clock::add_with_token(view.frame_clock.clone(), token, callback, window) {
+                    log::error!("animation frame subscription {token} failed: {error}");
+                }
+            })?;
+            return Ok(token);
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux", target_os = "freebsd")))]
+        {
+            let _ = callback;
+            Err(Error::from_reason("Unsupported operating system"))
+        }
     }
     #[napi]
     pub fn acknowledge_animation_frame(&self, token: u32) -> Result<()> {

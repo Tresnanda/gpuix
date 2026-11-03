@@ -9,13 +9,20 @@ pub(crate) struct Clock { origin: Option<Instant>, next: u32, scheduled: bool, g
 // it then delivers at once instead of waiting a whole frame.
 struct Entry { callback: ThreadsafeFunction<Value>, pending: bool, pending_since: Instant, #[cfg_attr(target_os = "macos", allow(dead_code))] missed: bool }
 pub(crate) type Shared = Rc<RefCell<Clock>>;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn add(clock: Shared, callback: ThreadsafeFunction<Value>, window: &gpui::Window) -> Result<u32> {
+    let token={ let mut state=clock.borrow_mut(); state.next=state.next.checked_add(1).ok_or_else(|| Error::from_reason("Frame tokens exhausted"))?; state.next };
+    add_with_token(clock, token, callback, window)?;
+    Ok(token)
+}
+/// Off macOS the token is chosen on the JS thread and the subscription is queued to the UI thread, so subscribing never
+/// waits for a busy UI thread (the composer and motion subscribe on every keystroke).
+pub(crate) fn add_with_token(clock: Shared, token: u32, callback: ThreadsafeFunction<Value>, window: &gpui::Window) -> Result<()> {
     let mut state=clock.borrow_mut();
     if state.entries.len()>=64 { return Err(Error::from_reason("At most 64 frame subscribers")); }
-    state.next=state.next.checked_add(1).ok_or_else(|| Error::from_reason("Frame tokens exhausted"))?;
-    let token=state.next; state.entries.insert(token,Entry{callback,pending:false,pending_since:Instant::now(),missed:false});
+    state.entries.insert(token,Entry{callback,pending:false,pending_since:Instant::now(),missed:false});
     drop(state); ensure_scheduled(&clock,window);
-    Ok(token)
+    Ok(())
 }
 pub(crate) fn ack(clock: &Shared, token:u32, window:&gpui::Window) {
     let mut state=clock.borrow_mut();
