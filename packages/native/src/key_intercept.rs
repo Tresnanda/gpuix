@@ -11,6 +11,7 @@ use std::{
 
 struct Pending {
     token: u32,
+    id: u64,
     event: KeyDownEvent,
     focus: FocusHandle,
     answer: Option<bool>,
@@ -83,7 +84,7 @@ pub(crate) fn listener(callback: Option<EventCallback>) -> impl gpui::IntoElemen
                     if pending.len() == 256 {
                         pending.pop_front();
                     }
-                    pending.push_back(Pending { token, event: event.clone(), focus, answer: if cancellable { None } else { Some(false) } });
+                    pending.push_back(Pending { token, id, event: event.clone(), focus, answer: if cancellable { None } else { Some(false) } });
                     count_queued(&pending);
                 });
                 emit_event_full(&callback, id, "keyDown", |payload| {
@@ -111,9 +112,8 @@ pub(crate) fn resolve(token: u32, prevented: bool, window: &mut Window, cx: &mut
     loop {
         let next = PENDING.with(|pending| {
             let mut pending = pending.borrow_mut();
-            let next = if pending.front().is_some_and(|item| item.answer.is_some()) { pending.pop_front() } else { None };
-            count_queued(&pending);
-            next
+            // Counted until its replay is published below: a read in between waits, as before.
+            if pending.front().is_some_and(|item| item.answer.is_some()) { pending.pop_front() } else { None }
         });
         let Some(item) = next else {
             break;
@@ -128,6 +128,9 @@ pub(crate) fn resolve(token: u32, prevented: bool, window: &mut Window, cx: &mut
                 window.dispatch_event(gpui::PlatformInput::KeyDown(item.event), cx);
             }
             REPLAY.with(|flag| flag.set(false));
+            // The replayed key moved the caret before any event or render published it (#215).
+            crate::custom_elements::input::publish_input_selection(item.id, cx);
         }
+        PENDING.with(|pending| count_queued(&pending.borrow()));
     }
 }

@@ -67,6 +67,14 @@ pub(crate) fn mirrored_selection(id: u64) -> Option<serde_json::Value> {
     mirror.get(&id).map(|(_, selection)| selection_json(*selection))
 }
 
+/// Publish this input's selection now (a replayed key moved it); nothing for
+/// another element or on macOS.
+pub(crate) fn publish_input_selection(id: u64, cx: &mut gpui::App) {
+    if let Ok(editor) = editor_for(id) {
+        editor.update(cx, |state, _| state.publish_selection());
+    }
+}
+
 #[cfg(not(target_os = "macos"))]
 fn next_mirror_owner() -> u64 {
     MIRROR_OWNER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
