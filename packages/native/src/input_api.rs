@@ -33,11 +33,103 @@ fn checked_range(text: &str, start: u32, end: u32) -> napi::Result<std::ops::Ran
 }
 
 pub(crate) fn input_selection(id: u64, cx: &gpui::App) -> napi::Result<serde_json::Value> {
-    let editor = editor_for(id)?;
-    let state = editor.read(cx);
-    let range = state.range_to_utf16(&state.selected_range);
-    Ok(serde_json::json!({"start": range.start, "end": range.end,
-        "reversed": state.selection_reversed, "composing": state.marked_range.is_some()}))
+    Ok(selection_json(editor_for(id)?.read(cx).selection_snapshot()))
+}
+
+fn selection_json(selection: crate::element_tree::InputSelectionPayload) -> serde_json::Value {
+    serde_json::json!({"start": selection.start, "end": selection.end,
+        "reversed": selection.reversed, "composing": selection.composing})
+}
+
+// Kybern (#215): off macOS every input's selection as the UI thread last saw
+// it, so `getInputSelection` answers on the JS thread instead of waiting for
+// the UI thread (about a frame while an answer streams). The UI thread writes
+// it before it emits any of the input's events and whenever it renders a moved
+// selection, and a waited `setInputSelection`/`editInput` writes it before it
+// returns, so a read never sees a state older than the event JS is handling or
+// its own last write. While intercepted keys wait for JS's answer it is not
+// used (`key_intercept::keys_queued`): the keys queued behind them replay only
+// after those answers, which the waited read runs behind. Unlike the waited
+// read, it does not wait for mutation batches still queued for the UI thread
+// (a `value` the UI thread has not applied yet). macOS reads the editor
+// directly on its one thread.
+#[cfg(not(target_os = "macos"))]
+static SELECTION_MIRROR: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<u64, (u64, crate::element_tree::InputSelectionPayload)>>,
+> = std::sync::LazyLock::new(Default::default);
+#[cfg(not(target_os = "macos"))]
+static MIRROR_OWNER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The mirrored selection of a mounted input, if the UI thread published one.
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn mirrored_selection(id: u64) -> Option<serde_json::Value> {
+    let mirror = SELECTION_MIRROR.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    mirror.get(&id).map(|(_, selection)| selection_json(*selection))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn next_mirror_owner() -> u64 {
+    MIRROR_OWNER.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+}
+#[cfg(target_os = "macos")]
+fn next_mirror_owner() -> u64 {
+    0
+}
+
+impl TextEditorState {
+    fn selection_snapshot(&self) -> crate::element_tree::InputSelectionPayload {
+        let range = self.range_to_utf16(&self.selected_range);
+        crate::element_tree::InputSelectionPayload {
+            start: range.start as u32,
+            end: range.end as u32,
+            reversed: self.selection_reversed,
+            composing: self.marked_range.is_some(),
+        }
+    }
+
+    /// Publish the current selection to the mirror and return it for an event
+    /// payload. On macOS nothing is published and events carry no selection.
+    #[cfg(not(target_os = "macos"))]
+    fn publish_selection(&mut self) -> Option<crate::element_tree::InputSelectionPayload> {
+        let selection = self.selection_snapshot();
+        self.mirrored = Some(self.mirror_key());
+        SELECTION_MIRROR
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(self.element_id, (self.mirror_owner, selection));
+        Some(selection)
+    }
+    #[cfg(target_os = "macos")]
+    fn publish_selection(&mut self) -> Option<crate::element_tree::InputSelectionPayload> {
+        None
+    }
+
+    /// What the mirror was last written from: the UTF-16 offsets depend on the
+    /// text before the caret too, so its length is part of it.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    fn mirror_key(&self) -> (Range<usize>, bool, bool, usize) {
+        (self.selected_range.clone(), self.selection_reversed, self.marked_range.is_some(), self.content.len())
+    }
+
+    /// On render: publish a selection that moved without an event (a drag, a
+    /// value written by React).
+    fn publish_moved_selection(&mut self) {
+        #[cfg(not(target_os = "macos"))]
+        if self.mirrored.as_ref() != Some(&self.mirror_key()) {
+            self.publish_selection();
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+impl Drop for TextEditorState {
+    fn drop(&mut self) {
+        let mut mirror = SELECTION_MIRROR.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        // A remount under the same element id may already own the entry.
+        if mirror.get(&self.element_id).is_some_and(|(owner, _)| *owner == self.mirror_owner) {
+            mirror.remove(&self.element_id);
+        }
+    }
 }
 
 pub(crate) fn select_input(id: u64, start: u32, end: u32, reversed: bool, cx: &mut gpui::App) -> napi::Result<()> {
@@ -50,6 +142,7 @@ pub(crate) fn select_input(id: u64, start: u32, end: u32, reversed: bool, cx: &m
         state.last_edit = None;
         state.follow_cursor = true;
         state.reset_blink(cx);
+        state.publish_selection();
         cx.notify();
         Ok(())
     })
@@ -79,6 +172,7 @@ pub(crate) fn edit_input(id: u64, edit: serde_json::Value, window: &mut gpui::Wi
         state.last_edit = None;
         state.replace_text_in_range(Some(start as usize..end as usize), text, window, cx);
         state.last_edit = None;
+        state.publish_selection();
         Ok(())
     })
 }

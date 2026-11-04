@@ -24,7 +24,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use web_time::Instant;
 
 use super::{CustomElement, CustomElementFactory, CustomRenderContext};
-use crate::renderer::{emit_event_full, emit_key_event, EventCallback};
+use crate::renderer::{emit_event_full, emit_key_event_with_selection, EventCallback};
 use crate::theme::Theme;
 
 actions!(
@@ -446,6 +446,8 @@ impl CustomElement for TextEditorElement {
                     redo_stack: Vec::new(),
                     last_edit: None,
                     code: CodeEditor::default(),
+                    mirror_owner: next_mirror_owner(),
+                    mirrored: None,
                 })
             })
             .clone();
@@ -456,12 +458,14 @@ impl CustomElement for TextEditorElement {
             self.key_interceptor = Some(cx.intercept_keystrokes(move |event, window, cx| {
                 if crate::key_intercept::replaying() { return; }
                 let Some(state) = weak.upgrade() else { return; };
-                let state = state.read(cx);
-                if state.emits_key_down && state.marked_range.is_none()
-                    && state.focus_handle.is_focused(window)
-                    && (state.intercept_keys.contains(&event.keystroke.key) || crate::key_intercept::pending())
-                {
-                    crate::key_intercept::capture(state.element_id, state.focus_handle.clone(), state.intercept_keys.contains(&event.keystroke.key), window, cx);
+                let captured = state.update(cx, |state, _| {
+                    (state.emits_key_down && state.marked_range.is_none()
+                        && state.focus_handle.is_focused(window)
+                        && (state.intercept_keys.contains(&event.keystroke.key) || crate::key_intercept::pending()))
+                    .then(|| (state.element_id, state.focus_handle.clone(), state.intercept_keys.contains(&event.keystroke.key), state.publish_selection()))
+                });
+                if let Some((id, focus, cancellable, selection)) = captured {
+                    crate::key_intercept::capture(id, focus, cancellable, selection, window, cx);
                 }
             }));
         }
@@ -502,6 +506,7 @@ impl CustomElement for TextEditorElement {
         });
         self.last_prop_value = Some(self.value.clone());
 
+        let clicked = state.downgrade();
         let element_id = gpui::SharedString::from(format!("__gpuix_editor_{}", ctx.id));
         let mut editor = div()
             .id(element_id)
@@ -564,8 +569,10 @@ impl CustomElement for TextEditorElement {
             let id = ctx.id;
             // Match retained hosts: GPUI's semantic click is unreliable under
             // embedded AppKit pumping, so primary mouse-up is the click boundary.
-            editor = editor.on_mouse_up(MouseButton::Left, move |event, _window, _cx| {
+            editor = editor.on_mouse_up(MouseButton::Left, move |event, _window, cx| {
+                let selection = clicked.update(cx, |state, _| state.publish_selection()).ok().flatten();
                 emit_event_full(&callback, id, "click", |payload| {
+                    payload.selection = selection;
                     let (x, y) = crate::renderer::point_to_xy(event.position);
                     payload.x = Some(x);
                     payload.y = Some(y);
@@ -768,6 +775,12 @@ struct TextEditorState {
     redo_stack: Vec<EditSnapshot>,
     last_edit: Option<LastEdit>,
     code: CodeEditor,
+    /// #215: this editor's claim on the selection mirror (input_api.rs) and
+    /// what it last published there; unused on macOS.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    mirror_owner: u64,
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    mirrored: Option<(Range<usize>, bool, bool, usize)>,
 }
 
 include!("../input_api.rs");
@@ -853,8 +866,10 @@ impl TextEditorState {
             while self.pending_values.len() > 32 {
                 self.pending_values.pop_front();
             }
+            let selection = self.publish_selection();
             emit_event_full(&self.callback, self.element_id, "change", |payload| {
                 payload.value = Some(self.content.clone());
+                payload.selection = selection;
             });
         }
     }
@@ -1784,9 +1799,13 @@ impl EntityInputHandler for TextEditorState {
 
 impl gpui::Render for TextEditorState {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.publish_moved_selection();
         let key_down_callback = self.callback.clone();
         let key_up_callback = self.callback.clone();
         let element_id = self.element_id;
+        // #215: key events carry the selection as of the key (off macOS).
+        let key_down_editor = cx.entity().downgrade();
+        let key_up_editor = key_down_editor.clone();
         div()
             .key_context(if !self.multiline {
                 INPUT_KEY_CONTEXT
@@ -1836,20 +1855,23 @@ impl gpui::Render for TextEditorState {
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
             .when(self.emits_key_down, move |editor| {
-                editor.on_key_down(move |event, _window, _cx| {
+                editor.on_key_down(move |event, _window, cx| {
                     if crate::key_intercept::replaying() { return; }
-                    emit_key_event(
+                    let selection = key_down_editor.update(cx, |state, _| state.publish_selection()).ok().flatten();
+                    emit_key_event_with_selection(
                         &key_down_callback,
                         element_id,
                         "keyDown",
                         &event.keystroke,
                         Some(event.is_held),
+                        selection,
                     );
                 })
             })
             .when(self.emits_key_up, move |editor| {
-                editor.on_key_up(move |event, _window, _cx| {
-                    emit_key_event(&key_up_callback, element_id, "keyUp", &event.keystroke, None);
+                editor.on_key_up(move |event, _window, cx| {
+                    let selection = key_up_editor.update(cx, |state, _| state.publish_selection()).ok().flatten();
+                    emit_key_event_with_selection(&key_up_callback, element_id, "keyUp", &event.keystroke, None, selection);
                 })
             })
             .w_full()

@@ -2538,6 +2538,13 @@ impl GpuixRenderer {
     #[napi]
     pub fn get_input_selection(&self, element_id: f64) -> Result<serde_json::Value> {
         let id = to_element_id(element_id)?;
+        // #215: off macOS the UI thread's last published selection, without a waited round trip.
+        #[cfg(not(target_os = "macos"))]
+        if !crate::key_intercept::keys_queued() {
+            if let Some(selection) = crate::custom_elements::input::mirrored_selection(id) {
+                return Ok(selection);
+            }
+        }
         return update_window_without_view(move |_, cx| crate::custom_elements::input::input_selection(id, cx))?;
     }
 
@@ -4977,6 +4984,18 @@ pub(crate) fn emit_key_event(
     keystroke: &gpui::Keystroke,
     is_held: Option<bool>,
 ) {
+    emit_key_event_with_selection(callback, element_id, event_type, keystroke, is_held, None);
+}
+
+/// `emit_key_event` for an input, with its selection as of the key (#215).
+pub(crate) fn emit_key_event_with_selection(
+    callback: &Option<EventCallback>,
+    element_id: u64,
+    event_type: &str,
+    keystroke: &gpui::Keystroke,
+    is_held: Option<bool>,
+    selection: Option<crate::element_tree::InputSelectionPayload>,
+) {
     let keystroke_id = KEYSTROKE_ID.with(|id| id.get());
     emit_event_full(callback, element_id, event_type, |payload| {
         payload.key = Some(keystroke.key.clone());
@@ -4984,6 +5003,7 @@ pub(crate) fn emit_key_event(
         payload.is_held = is_held;
         payload.modifiers = Some(keystroke.modifiers.into());
         payload.keystroke_id = Some(keystroke_id as f64);
+        payload.selection = selection;
     });
 }
 

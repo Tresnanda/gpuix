@@ -506,6 +506,14 @@ export interface EventModifiers {
   cmd: boolean
 }
 
+/** UTF-16 offsets, as `getInputSelection` reports them. */
+export interface InputSelectionPayload {
+  start: number
+  end: number
+  reversed: boolean
+  composing: boolean
+}
+
 /** Event payload sent back to JS when a user interacts with an element. */
 export interface EventPayload {
   /** Numeric element ID (matches the ID assigned in JS via createElement). */
@@ -634,6 +642,13 @@ export interface EventPayload {
    */
   paths?: Array<string>
   modifiers?: EventModifiers
+  /**
+   * Kybern (#215): the input's selection when the event was emitted, the
+   * value `getInputSelection` would have returned then. Off macOS only:
+   * there it saves the key handlers a waited UI-thread round trip.
+   * Populated for an `<input>`/`<textarea>`'s change, keyDown, keyUp and click.
+   */
+  selection?: InputSelectionPayload
 }
 
 /** True only when this binary compiled the real GPU test renderer. */

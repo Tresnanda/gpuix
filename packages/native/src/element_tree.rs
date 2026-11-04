@@ -140,6 +140,26 @@ pub struct EventPayload {
 
     // ── Modifiers ────────────────────────────────────────────────────
     pub modifiers: Option<EventModifiers>,
+
+    /// Kybern (#215): the input's selection when the event was emitted, the
+    /// value `getInputSelection` would have returned then. Off macOS only:
+    /// there it saves the key handlers a waited UI-thread round trip.
+    /// Populated for an `<input>`/`<textarea>`'s change, keyDown, keyUp and click.
+    pub selection: Option<InputSelectionPayload>,
+}
+
+/// UTF-16 offsets, as `getInputSelection` reports them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(
+    all(target_arch = "wasm32", target_os = "unknown"),
+    derive(serde::Serialize)
+)]
+#[cfg_attr(not(all(target_arch = "wasm32", target_os = "unknown")), napi(object))]
+pub struct InputSelectionPayload {
+    pub start: u32,
+    pub end: u32,
+    pub reversed: bool,
+    pub composing: bool,
 }
 
 impl Default for EventPayload {
@@ -176,6 +196,7 @@ impl Default for EventPayload {
             motion_generation: None,
             paths: None,
             modifiers: None,
+            selection: None,
         }
     }
 }

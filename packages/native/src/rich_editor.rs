@@ -704,6 +704,8 @@ impl CustomElement for RichEditorElement {
                         state.element_id,
                         state.focus_handle.clone(),
                         state.intercept_keys.contains(&event.keystroke.key),
+                        // Rich documents report their selection through their own API, not getInputSelection.
+                        None,
                         window,
                         cx,
                     );
