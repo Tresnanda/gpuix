@@ -5356,6 +5356,7 @@ impl GpuixView {
                 .unwrap_or(1.0);
             return unmounted_virtual_row(height);
         }
+        self.sync_focus_handles_before_build(&tree, window, cx);
 
         let callback = self.event_callback.clone();
         let now = self.clock.now();
@@ -6156,6 +6157,27 @@ impl GpuixView {
         })
         .collect();
         Some(path.into())
+    }
+
+    /// Kybern (#218): a cached island or a virtual-list row can build in a frame
+    /// where the root view does not render, so `render`'s sync has not run for
+    /// elements that arrived since. An input that renders there first took a
+    /// private focus handle of its own: autoFocus and `focusElement` then focused
+    /// the renderer's handle, which nothing tracks, and every key went to the
+    /// window root (the model picker's search, reopened, ignored typing). Create
+    /// the missing handles (and run their autoFocus) before building, as `render`
+    /// does. Nothing to do, and no work beyond the lookups, when none is missing.
+    pub(crate) fn sync_focus_handles_before_build(
+        &mut self,
+        tree: &RetainedTree,
+        window: &mut gpui::Window,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        if tree.focusable_ids.iter().all(|id| self.focus_handles.contains_key(id)) {
+            return;
+        }
+        let callback = self.event_callback.clone();
+        self.sync_focus_handles(tree, &callback, window, cx);
     }
 
     fn sync_focus_handles(
