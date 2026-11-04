@@ -391,6 +391,8 @@ impl GpuixView {
         let Some(revision) = tree.elements.get(&node_id).map(|element| element.subtree_revision) else {
             return (gpui::Empty.into_any_element(), Vec::new(), u64::MAX);
         };
+        // Before any element in the island renders: see `sync_focus_handles_before_build`.
+        self.sync_focus_handles_before_build(&tree, window, cx);
         let mut ids = Vec::new();
         subtree_ids(&tree, node_id, &mut ids);
         let callback = self.event_callback.clone();
