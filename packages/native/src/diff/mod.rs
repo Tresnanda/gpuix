@@ -569,6 +569,42 @@ pub fn estimated_row_height(rows: &[DiffRow], metrics: &Metrics) -> f32 {
     total / rows.len() as f32
 }
 
+/// Visual lines a soft-wrapped text of `chars` characters takes at `columns`
+/// characters per line. Unknown widths (`columns == 0`) count as one line.
+pub fn wrapped_line_count(chars: usize, columns: usize) -> usize {
+    if columns == 0 {
+        1
+    } else {
+        chars.div_ceil(columns).max(1)
+    }
+}
+
+/// Per-row height hints for a soft-wrapped `<diff>`: a line row takes one line
+/// height per `columns(file)` characters of its text, every other row its fixed
+/// height. Only a seed for the virtualized list; rows it builds are measured.
+pub fn wrapped_row_heights(
+    files: &[FileDiff],
+    rows: &[DiffRow],
+    metrics: &Metrics,
+    columns: impl Fn(usize) -> usize,
+) -> Vec<f32> {
+    rows.iter()
+        .map(|row| match *row {
+            DiffRow::Line { file, hunk, line } => {
+                let chars = files
+                    .get(file as usize)
+                    .and_then(|f| f.hunks.get(hunk as usize))
+                    .and_then(|h| h.lines.get(line as usize))
+                    .filter(|l| l.kind != LineKind::Meta)
+                    .map(|l| l.text.chars().count())
+                    .unwrap_or(0);
+                metrics.diff_line_height * wrapped_line_count(chars, columns(file as usize)) as f32
+            }
+            _ => row.height(metrics),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -789,6 +825,43 @@ mod tests {
             parse_patch("diff --git a/x.rs b/x.rs\nnew file mode 100644\n@@ -0,0 +1 @@\n+hi\n");
         let rows = flatten_rows(&files, |_| false, None);
         assert!(rows.contains(&DiffRow::Notice { file: 0, notice: 0 }));
+    }
+
+    #[test]
+    fn wrapped_line_count_rounds_up_and_never_drops_a_row() {
+        assert_eq!(wrapped_line_count(0, 80), 1);
+        assert_eq!(wrapped_line_count(80, 80), 1);
+        assert_eq!(wrapped_line_count(81, 80), 2);
+        assert_eq!(wrapped_line_count(500, 0), 1);
+    }
+
+    #[test]
+    fn wrapped_hints_grow_only_long_line_rows() {
+        let m = Metrics::default();
+        let long = "x".repeat(250);
+        let patch = format!(
+            "diff --git a/a.ts b/a.ts
+--- a/a.ts
++++ b/a.ts
+@@ -1,2 +1,2 @@
+ short
+-{long}
++{long}
+"
+        );
+        let files = parse_patch(&patch);
+        let rows = flatten_rows(&files, |_| false, None);
+        let hints = wrapped_row_heights(&files, &rows, &m, |_| 100);
+        let unwrapped: Vec<f32> = rows.iter().map(|r| r.height(&m)).collect();
+        assert_eq!(hints.len(), rows.len());
+        for ((row, hint), base) in rows.iter().zip(&hints).zip(&unwrapped) {
+            match row {
+                DiffRow::Line { line, .. } if *line > 0 => assert_eq!(*hint, m.diff_line_height * 3.0),
+                _ => assert_eq!(hint, base),
+            }
+        }
+        // An unknown width hints every row at its unwrapped height.
+        assert_eq!(wrapped_row_heights(&files, &rows, &m, |_| 0), unwrapped);
     }
 
     #[test]

@@ -8,6 +8,7 @@
 //!   patch={unifiedPatch}
 //!   wordDiff
 //!   maxLines={24}
+//!   softWrap                    // wrap long lines; no horizontal scroller
 //!   collapsedPaths={['pnpm-lock.yaml']}
 //!   onToggleFile={(e) => {}}
 //!   onShowMore={(e) => {}}
@@ -17,6 +18,11 @@
 //! This element owns parsed diff data. The `scroll` path uses `gpui::list()`
 //! so the closure can capture an `Rc` and build only visible rows. The default
 //! flow path renders the same rows in a column so a parent can be the scroller.
+//!
+//! `softWrap` wraps line text at the available width (the same text machinery
+//! as `<code softWrap>`). Line rows then grow to fit: gutters, markers and row
+//! washes fill the taller row, numbers sit on its first visual line, and the
+//! list measures each row instead of assuming one line height.
 
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -127,6 +133,11 @@ pub struct DiffElement {
     content_width: Option<(u64, f32)>,
     horizontal_scroll: gpui::ScrollHandle,
     viewport_width: std::rc::Rc<std::cell::Cell<f32>>, 
+    soft_wrap: bool,
+    /// The element's width last frame while wrapped, for the rows' height hints.
+    wrap_width: std::rc::Rc<std::cell::Cell<f32>>,
+    /// The list's hints were seeded from a known `wrap_width`.
+    wrap_hinted: bool,
 }
 
 impl DiffElement {
@@ -303,8 +314,11 @@ impl CustomElement for DiffElement {
             .style
             .and_then(|style| style.border_radius)
             .unwrap_or(0.0) as f32;
+        let wrap = self.soft_wrap;
+        // A wrapped diff never scrolls sideways: no content width, no scrollbar.
+        let horizontal_scroll = theme.diff.horizontal_scroll && !wrap;
         let row_theme = theme.clone();
-        let content_width = if theme.diff.horizontal_scroll {
+        let content_width = if horizontal_scroll {
             use std::hash::{Hash, Hasher};
             let mut hash = std::collections::hash_map::DefaultHasher::new();
             self.fingerprint.hash(&mut hash); theme.font_mono.hash(&mut hash);
@@ -334,20 +348,38 @@ impl CustomElement for DiffElement {
                 })
                 .clone();
             let metrics_hash = {
-                use std::hash::Hasher;
+                use std::hash::{Hash, Hasher};
                 let mut hasher = std::collections::hash_map::DefaultHasher::new();
                 metrics.hash_diff_layout_into(&mut hasher);
+                // Wrapping changes every long row's height: toggling it resets
+                // the list's measurements like a metrics change.
+                wrap.hash(&mut hasher);
                 hasher.finish()
             };
-            if rebuilt || self.list_metrics != Some(metrics_hash) {
+            let wrap_width = self.wrap_width.get();
+            // The first frame of a wrapped diff has no width yet; re-seed the
+            // hints once the observer below has measured one.
+            let wrap_unhinted = wrap && !self.wrap_hinted && wrap_width > 0.0;
+            if rebuilt || self.list_metrics != Some(metrics_hash) || wrap_unhinted {
                 // `reset_with_uniform_height` clears `logical_scroll_top`, so a live
                 // patch update or a collapse would jump the reader back to the top.
                 // Capture the anchor and put it back, clamped to the new row count.
                 let anchor = state.logical_scroll_top();
-                state.reset_with_uniform_height(
-                    data.rows.len(),
-                    px(crate::diff::estimated_row_height(&data.rows, &metrics)),
-                );
+                if wrap {
+                    // Wrapped rows vary in height, so no uniform hint: seed each
+                    // row from its text length at the last known width; the
+                    // list measures the rows it builds and re-measures on a
+                    // width change.
+                    let heights = wrapped_hints(&data, &theme, wrap_width, _window);
+                    state.reset(data.rows.len());
+                    state.kybern_splice_hinted(0..data.rows.len(), &heights);
+                    self.wrap_hinted = wrap_width > 0.0;
+                } else {
+                    state.reset_with_uniform_height(
+                        data.rows.len(),
+                        px(crate::diff::estimated_row_height(&data.rows, &metrics)),
+                    );
+                }
                 if !data.rows.is_empty() {
                     let mut anchor = anchor;
                     anchor.item_ix = anchor.item_ix.min(data.rows.len() - 1);
@@ -378,6 +410,7 @@ impl CustomElement for DiffElement {
                         wants_show_more,
                         theme: &row_theme,
                         radius,
+                        wrap,
                     },
                 );
                 if cache_layout { crate::scroll_layout::apply(row, [element_id, ix as u64, layout_revision]) } else { row }
@@ -406,6 +439,7 @@ impl CustomElement for DiffElement {
                         wants_show_more,
                         theme: &row_theme,
                         radius,
+                        wrap,
                     },
                 ));
             }
@@ -417,12 +451,25 @@ impl CustomElement for DiffElement {
             .flex()
             .flex_col()
             .bg(theme.bg);
-        if theme.diff.horizontal_scroll { container = container.min_w_0(); }
+        if horizontal_scroll || wrap { container = container.min_w_0(); }
         if self.scroll {
             container = container.min_h_0();
         }
 
-        if theme.diff.horizontal_scroll {
+        if wrap {
+            // Width for the wrapped rows' height hints; the list re-measures
+            // its own rows on a width change.
+            let width=self.wrap_width.clone();let view=_cx.entity().downgrade();
+            let observer=gpui::canvas(move |bounds,_,cx| {
+                let next=f32::from(bounds.size.width);
+                if (width.get()-next).abs()>0.1 {
+                    let first=width.get()<=0.0;width.set(next);
+                    if first {let view=view.clone();cx.defer(move |cx|{let _=view.update(cx,|_,cx|cx.notify());});}
+                }
+            },|_,_,_,_|{}).absolute().size_full();
+            return super::custom_surface(container,&ctx).child(observer).child(body).into_any_element();
+        }
+        if horizontal_scroll {
             let viewport=self.viewport_width.clone();let view=_cx.entity().downgrade();
             let observer=gpui::canvas(move |bounds,_,cx| {
                 let width=f32::from(bounds.size.width);
@@ -449,6 +496,7 @@ impl CustomElement for DiffElement {
             "patch" => self.patch = value.as_str().unwrap_or("").to_string(),
             "wordDiff" => self.show_word_diff = value.as_bool().unwrap_or(false),
             "scroll" => self.scroll = value.as_bool().unwrap_or(false),
+            "softWrap" => self.soft_wrap = value.as_bool().unwrap_or(false),
             "maxLines" => {
                 self.max_lines = value.as_u64().map(|n| n as usize);
             }
@@ -475,6 +523,7 @@ impl CustomElement for DiffElement {
             "wordDiff",
             "scroll",
             "maxLines",
+            "softWrap",
             "collapsedPaths",
             "theme",
         ]
@@ -528,6 +577,8 @@ struct RowContext<'a> {
     /// paints at the top edge, so it carries the radius itself. Below it the
     /// square edge is correct: it reads as "content continues".
     radius: f32,
+    /// `softWrap`: line rows grow to fit their wrapped text.
+    wrap: bool,
 }
 
 impl RowContext<'_> {
@@ -858,7 +909,11 @@ fn diff_line_row(
             _ => gpui::transparent_black(),
         };
         let mut gutter = gpui::div().id(SharedString::from(format!("__gpuix_diff_gutter_{}_{}_{}",ctx.element_id,ix,old)))
-            .w(px(if old {gutters.0} else {gutters.1})).h_full().items_center().bg(background)
+            .w(px(if old {gutters.0} else {gutters.1})).bg(background)
+            // Wrapped: the gutter stretches with the row and its number sits on
+            // the first visual line (one line height, top-aligned).
+            .when(!ctx.wrap, |g| g.h_full().items_center())
+            .when(ctx.wrap, |g| g.items_start().line_height(px(m.diff_line_height)))
             .flex_none()
             .font_family(theme.diff.gutter_font.clone().unwrap_or(theme.font_mono.clone()))
             .text_size(px(number(theme.diff.gutter_text_size,11.0)))
@@ -925,8 +980,14 @@ fn diff_line_row(
         .w_full()
         .flex_none()
         .flex()
-        .flex_row()
-        .items_center();
+        .flex_row();
+    // Wrapped rows grow from one line height; children stretch (the default
+    // alignment), so the washes, accent bar and gutter colours fill the row.
+    row = if ctx.wrap {
+        crate::code_wrap::row(row, true, m.diff_line_height)
+    } else {
+        row.items_center()
+    };
 
     if let Some(bg) = row_bg {
         row = row.bg(bg);
@@ -953,7 +1014,7 @@ fn diff_line_row(
         .child({
             let mut bar = gpui::div()
                 .w(px(m.diff_accent_bar_width))
-                .h_full()
+                .when(!ctx.wrap, |b| b.h_full())
                 .flex_none();
             if let Some(color) = accent {
                 bar = bar.bg(color);
@@ -986,21 +1047,28 @@ fn diff_line_row(
                 .flex()
                 .when(theme.diff.table_layout,|s|s.justify_start()).when(!theme.diff.table_layout,|s|s.justify_center())
                 .text_size(px(m.diff_text_size))
+                .when(ctx.wrap, |c| c.line_height(px(m.diff_line_height)))
                 .text_color(marker_color)
                 .font_family(theme.font_mono.clone())
                 .child(crate::text::chrome_text(SharedString::from(marker), None)),
         )
-        .child(
-            gpui::div()
+        .child({
+            let cell = gpui::div()
                 .flex_1()
                 .min_w_0()
                 .overflow_hidden()
                 .pl(px(number(theme.diff.content_padding_left,12.0)))
                 .font_family(theme.font_mono.clone())
-                .text_size(px(m.diff_text_size))
-                .whitespace_nowrap()
-                .child(ctx.text(ix, line.text.clone(), Some(runs), word_wash)),
-        )
+                .text_size(px(m.diff_text_size));
+            // Wrapped: `<code softWrap>`'s content rules, one line height per
+            // visual line so the first lines up with the gutter numbers.
+            if ctx.wrap {
+                crate::code_wrap::content(cell, true).line_height(px(m.diff_line_height))
+            } else {
+                cell.whitespace_nowrap()
+            }
+            .child(ctx.text(ix, line.text.clone(), Some(runs), word_wash))
+        })
         .into_any_element()
 }
 
@@ -1013,4 +1081,25 @@ fn opacity(mut color: Hsla, alpha: f32) -> Hsla {
 fn ink(theme: &Theme, alpha: f32) -> Hsla {
     let lightness = if theme.bg.l < 0.5 { 1.0 } else { 0.0 };
     gpui::hsla(0.0, 0.0, lightness, alpha)
+}
+
+/// Height hints for a wrapped diff's rows at `width` (the element's width last
+/// frame; `0` until the first one is measured, which hints one line per row).
+fn wrapped_hints(data: &DiffData, theme: &Theme, width: f32, window: &mut gpui::Window) -> Vec<f32> {
+    let m = &theme.metrics;
+    let advance = if width > 0.0 {
+        let font = gpui::font(theme.font_mono.clone());
+        let runs = runs_for_spans("0", &[], &font, theme.text);
+        f32::from(window.text_system().shape_line("0".into(), px(m.diff_text_size), &runs, None).width())
+    } else {
+        0.0
+    };
+    let marker = m.diff_marker_width + if theme.diff.table_layout { m.diff_marker_width / 1.5 * 1.25 } else { 0.0 };
+    let fixed = m.diff_accent_bar_width + marker + number(theme.diff.content_padding_left, 12.0);
+    let columns: Vec<usize> = data.files.iter().map(|file| {
+        let gutters = diff_gutters(file, theme);
+        let text = width - fixed - gutters.0 - gutters.1;
+        if advance > 0.0 && text > advance { (text / advance).floor() as usize } else { 0 }
+    }).collect();
+    crate::diff::wrapped_row_heights(&data.files, &data.rows, m, |file| columns.get(file).copied().unwrap_or(0))
 }
