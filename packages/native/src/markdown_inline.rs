@@ -138,7 +138,7 @@ struct InlineInteraction {
     selectable: bool,
     selection_wash: Hsla,
     hover_link_color: Option<Hsla>,
-    on_link: Option<Arc<dyn Fn(&str)>>,
+    on_link: Option<Arc<dyn Fn(&str, Option<(f64, f64)>)>>,
     highlight: Option<Arc<crate::text::HighlightContext>>,
     caret: Option<Hsla>,
 }

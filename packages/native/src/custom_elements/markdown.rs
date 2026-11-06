@@ -91,13 +91,17 @@ impl CustomElement for MarkdownElement {
         // Link clicks are hit-tested per byte range inside the painted text, so
         // clicking prose emits nothing and clicking the second link emits the
         // second URL.
-        let on_link: Option<Arc<dyn Fn(&str)>> = if ctx.events.contains("linkClick") {
+        let on_link: Option<Arc<dyn Fn(&str, Option<(f64, f64)>)>> = if ctx.events.contains("linkClick") || ctx.events.contains("linkContextMenu") {
             let callback = ctx.event_callback.clone();
             let element_id = ctx.id;
-            Some(Arc::new(move |url: &str| {
+            let context_menu = ctx.events.contains("linkContextMenu");
+            let link_click = ctx.events.contains("linkClick");
+            Some(Arc::new(move |url: &str, at: Option<(f64, f64)>| {
                 let url = url.to_string();
-                emit_event_full(&callback, element_id, "linkClick", |p| {
+                if (at.is_some() && !context_menu) || (at.is_none() && !link_click) { return; }
+                emit_event_full(&callback, element_id, if at.is_some() { "linkContextMenu" } else { "linkClick" }, |p| {
                     p.value = Some(url);
+                    if let Some((x, y)) = at { p.x = Some(x); p.y = Some(y); p.is_right_click = Some(true); }
                 });
             }))
         } else {
@@ -151,7 +155,7 @@ impl CustomElement for MarkdownElement {
     }
 
     fn supported_events(&self) -> &'static [&'static str] {
-        &["linkClick", "click", "mouseEnter", "mouseLeave", "fileDrop"]
+        &["linkClick", "linkContextMenu", "click", "mouseEnter", "mouseLeave", "fileDrop"]
     }
 
     fn destroy(&mut self) {

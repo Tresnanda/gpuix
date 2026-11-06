@@ -228,7 +228,7 @@ pub struct SelectableText {
     pub shared_links: Option<Arc<Vec<(Range<usize>, String)>>>,
     pub links: Vec<(Range<usize>, String)>,
     /// Called with the payload of the range under a click.
-    pub on_link: Option<Arc<dyn Fn(&str)>>,
+    pub on_link: Option<Arc<dyn Fn(&str, Option<(f64, f64)>)>>,
     /// False under `userSelect: "none"`: the text is still painted, logged and
     /// clickable, but it does not join the selection registry.
     pub selectable: bool,
@@ -454,7 +454,7 @@ fn register_link_listener(
     window: &mut Window,
     layout: &TextLayout,
     links: &[(Range<usize>, String)],
-    on_link: &Arc<dyn Fn(&str)>,
+    on_link: &Arc<dyn Fn(&str, Option<(f64, f64)>)>,
     selection: &SharedSelection,
 ) {
     use gpui::{DispatchPhase, MouseButton, MouseUpEvent};
@@ -469,7 +469,7 @@ fn register_link_listener(
         selection.clone(),
     );
     window.on_mouse_event(move |e: &MouseUpEvent, phase, _window, _cx| {
-        if phase != DispatchPhase::Bubble || e.button != MouseButton::Left {
+        if phase != DispatchPhase::Bubble || !matches!(e.button, MouseButton::Left | MouseButton::Right) {
             return;
         }
         if !layout.bounds().contains(&e.position) {
@@ -478,7 +478,7 @@ fn register_link_listener(
         // A drag that ends on a link is a selection, not a navigation. gpui
         // dispatches bubble listeners in reverse registration order, so the
         // spans from the drag's mouse-moves are already resolved here.
-        if selection.lock().selected_text().is_some() {
+        if e.button == MouseButton::Left && selection.lock().selected_text().is_some() {
             return;
         }
         // `index_for_position` returns Err with the nearest index when the
@@ -488,7 +488,7 @@ fn register_link_listener(
             return;
         };
         if let Some((_, payload)) = links.iter().find(|(range, _)| range.contains(&ix)) {
-            on_link(payload);
+            on_link(payload, (e.button == MouseButton::Right).then(|| (f32::from(e.position.x) as f64, f32::from(e.position.y) as f64)));
         }
     });
 }

@@ -210,7 +210,7 @@ pub struct MdContext {
     caret: Option<Hsla>,
     /// Called with the URL of the link under a click. Hit testing happens per
     /// byte range inside the painted text, not per block.
-    pub on_link: Option<Arc<dyn Fn(&str)>>,
+    pub on_link: Option<Arc<dyn Fn(&str, Option<(f64, f64)>)>>,
 }
 
 impl MdContext {
@@ -220,7 +220,7 @@ impl MdContext {
         selectable: bool,
         selection_wash: Hsla,
         theme: Theme,
-        on_link: Option<Arc<dyn Fn(&str)>>,
+        on_link: Option<Arc<dyn Fn(&str, Option<(f64, f64)>)>>,
         highlight_set: Option<Arc<crate::text::HighlightContext>>,
     ) -> Self {
         Self {

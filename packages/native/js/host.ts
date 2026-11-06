@@ -634,6 +634,8 @@ export interface DiffProps extends HostProps {
 
 // Props for the <markdown> custom element.
 export interface MarkdownProps extends HostProps {
+  /** Context click on a link; value is its URL, x/y the window position. */
+  onLinkContextMenu?: (event: EventPayload) => void
   /** GitHub-flavoured markdown. Tables, strikethrough and task lists are on. */
   source?: string
   theme?: GpuixTheme
