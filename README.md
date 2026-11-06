@@ -4076,3 +4076,7 @@ See [AGENTS.md](https://github.com/remorses/gpuix/blob/main/AGENTS.md) for detai
 ## License
 
 [Apache-2.0](https://github.com/remorses/gpuix/blob/main/LICENSE)
+
+## Linux window materials
+
+`kybernCapabilities().desktopMaterial` reports `translucent` and `blur` from the connected Wayland protocols or X11 compositor and supported atoms. Linux client decorations clip the whole window at 12 logical pixels when untiled; compositor blur regions follow that shape.

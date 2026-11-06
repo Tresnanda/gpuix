@@ -49,5 +49,14 @@ pub fn kybern_capabilities() -> serde_json::Value {
     // `GpuixRenderer::backdrop_filter_supported`. `windowMaterials`: window backgrounds beyond opaque/blurred/transparent.
     let backdrop = cfg!(target_os = "macos") || !std::env::var("KYBERN_BACKDROP_FILTER").is_ok_and(|value| value == "0");
     let window_materials: &[&str] = if cfg!(target_os = "windows") { &["mica", "mica-alt", "acrylic"] } else { &[] };
-    serde_json::json!({ "edgeFade": true, "backdrop": backdrop, "windowMaterials": window_materials })
+    let capabilities = serde_json::json!({ "edgeFade": true, "backdrop": backdrop, "windowMaterials": window_materials });
+    #[cfg(target_os = "linux")]
+    {
+        let mut capabilities = capabilities;
+        let (translucent, blur) = gpui_linux::desktop_material_capabilities();
+        capabilities["desktopMaterial"] = serde_json::json!({ "translucent": translucent, "blur": blur });
+        return capabilities;
+    }
+    #[cfg(not(target_os = "linux"))]
+    capabilities
 }

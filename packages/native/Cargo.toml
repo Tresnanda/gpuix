@@ -153,3 +153,6 @@ opt-level = 3
 
 [profile.dev.package.miniz_oxide]
 opt-level = 3
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gpui_linux = { path = "../../zed/crates/gpui_linux" }

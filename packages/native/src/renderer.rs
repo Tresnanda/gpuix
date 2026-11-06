@@ -6478,6 +6478,11 @@ impl gpui::Render for GpuixView {
             let drag_move_view = cx.weak_entity();
             let drag_end_view = drag_move_view.clone();
             let root = gpui::div().size_full();
+            #[cfg(target_os = "linux")]
+            let root = match window.window_decorations() {
+                gpui::Decorations::Client { tiling } if !tiling.top && !tiling.bottom && !tiling.left && !tiling.right => root.rounded(gpui::px(12.0)).overflow_hidden(),
+                _ => root,
+            };
             with_window_menu_actions(root)
                 .child(crate::key_intercept::listener(callback.clone()))
                 .child(window_key_events(
