@@ -33,8 +33,19 @@ gpui::actions!(
         ZoomWindow,
         /// Close the focused window.
         CloseWindow,
+        /// Kybern (#292): make the interface larger (`ui_zoom.rs`).
+        ZoomIn,
+        /// Kybern (#292): make the interface smaller.
+        ZoomOut,
+        /// Kybern (#292): the interface at 100 %.
+        ActualSize,
     ]
 );
+
+/// The context the View menu's zoom bindings require. No element has it, so a key never
+/// dispatches them (JS's window key listener gets the key); the menu still shows the first
+/// binding's keystroke.
+const MENU_ONLY: &str = "KybernMenuOnly";
 
 /// Binds the standard macOS shortcuts, registers the app-level handlers, and
 /// installs the menu bar. The window-level actions (`MinimizeWindow`,
@@ -47,6 +58,11 @@ pub(crate) fn init(app_name: &str, cx: &mut App) {
         gpui::KeyBinding::new("cmd-alt-h", HideOthers, None),
         gpui::KeyBinding::new("cmd-m", MinimizeWindow, None),
         gpui::KeyBinding::new("cmd-w", CloseWindow, None),
+        // The menu shows the first binding: ⌘+, as Safari does; ⌘= reaches the window as a key either way.
+        gpui::KeyBinding::new("cmd-+", ZoomIn, Some(MENU_ONLY)),
+        gpui::KeyBinding::new("cmd-=", ZoomIn, Some(MENU_ONLY)),
+        gpui::KeyBinding::new("cmd--", ZoomOut, Some(MENU_ONLY)),
+        gpui::KeyBinding::new("cmd-0", ActualSize, Some(MENU_ONLY)),
     ]);
 
     cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
@@ -55,6 +71,25 @@ pub(crate) fn init(app_name: &str, cx: &mut App) {
     cx.on_action(|_: &ShowAll, cx: &mut App| cx.unhide_other_apps());
 
     cx.set_menus(default_menus(app_name));
+}
+
+thread_local! {
+    /// Which View menu zoom items can be chosen: in, out, actual size (`setZoomMenuState`).
+    static ZOOM_ITEMS: std::cell::Cell<[bool; 3]> = const { std::cell::Cell::new([true, true, false]) };
+}
+
+/// Kybern (#292): which of Zoom in / Zoom out / Actual size can be chosen (not at the largest size that fits, at 80 %,
+/// at 100 %). AppKit validates a menu item by whether its action is available, so the root registers only the enabled
+/// ones (`with_window_menu_actions`); the window re-renders to pick that up.
+pub(crate) fn set_zoom_items(zoom_in: bool, zoom_out: bool, actual_size: bool, window: &mut gpui::Window) {
+    let next = [zoom_in, zoom_out, actual_size];
+    if ZOOM_ITEMS.with(|items| items.replace(next)) != next {
+        window.refresh();
+    }
+}
+
+pub(crate) fn zoom_items() -> [bool; 3] {
+    ZOOM_ITEMS.with(|items| items.get())
 }
 
 /// The App menu plus the Window menu, the minimum a macOS app is expected to
@@ -73,6 +108,16 @@ pub(crate) fn default_menus(app_name: &str) -> Vec<Menu> {
                 MenuItem::action("Show All", ShowAll),
                 MenuItem::separator(),
                 MenuItem::action(format!("Quit {app_name}"), Quit),
+            ],
+        },
+        // Kybern (#292): AppKit adds "Enter Full Screen" to a menu named View on its own.
+        Menu {
+            name: "View".into(),
+            disabled: false,
+            items: vec![
+                MenuItem::action("Zoom in", ZoomIn),
+                MenuItem::action("Zoom out", ZoomOut),
+                MenuItem::action("Actual size", ActualSize),
             ],
         },
         // No "Enter Full Screen" item: AppKit prepends its own window-tiling
@@ -130,9 +175,11 @@ mod tests {
     #[test]
     fn window_menu_keeps_the_name_appkit_looks_for() {
         let menus = default_menus("Chat");
-        assert_eq!(menus[1].name.as_ref(), "Window");
+        assert_eq!(menus[1].name.as_ref(), "View");
+        assert_eq!(item_names(&menus[1]), vec!["Zoom in", "Zoom out", "Actual size"]);
+        assert_eq!(menus[2].name.as_ref(), "Window");
         assert_eq!(
-            item_names(&menus[1]),
+            item_names(&menus[2]),
             vec!["Minimize", "Zoom", "-", "Close Window"]
         );
     }

@@ -46,12 +46,16 @@ use crate::theme::Theme;
 /// only place in GPUIX that has one. `crate::app_menu` owns everything else.
 #[cfg(target_os = "macos")]
 fn with_window_menu_actions(root: gpui::Div) -> gpui::Div {
-    use crate::app_menu::{CloseWindow, MinimizeWindow, ZoomWindow};
+    use crate::app_menu::{ActualSize, CloseWindow, MinimizeWindow, ZoomIn, ZoomOut, ZoomWindow};
     use gpui::prelude::*;
+    let [zoom_in, zoom_out, actual_size] = crate::app_menu::zoom_items();
 
     root.on_action(|_: &MinimizeWindow, window, _cx| window.minimize_window())
         .on_action(|_: &ZoomWindow, window, _cx| window.zoom_window())
         .on_action(|_: &CloseWindow, window, _cx| crate::close_guard::request(window))
+        .when(zoom_in, |root| root.on_action(|_: &ZoomIn, _window, _cx| crate::ui_zoom::menu_command("zoomIn")))
+        .when(zoom_out, |root| root.on_action(|_: &ZoomOut, _window, _cx| crate::ui_zoom::menu_command("zoomOut")))
+        .when(actual_size, |root| root.on_action(|_: &ActualSize, _window, _cx| crate::ui_zoom::menu_command("actualSize")))
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1533,9 +1537,13 @@ impl GpuixRenderer {
                 cx,
             );
 
+            let ui_zoom = window_options.ui_zoom;
             match cx.open_window(
                 to_gpui_window_options(&window_options, bounds),
-                |_window, cx| {
+                |window, cx| {
+                    if let Some(zoom) = ui_zoom {
+                        window.set_ui_zoom(zoom as f32, cx);
+                    }
                     cx.new(|_| {
                         GpuixView::new(tree.clone(), callback.clone(), title, selection.clone())
                     })
@@ -1826,9 +1834,13 @@ impl GpuixRenderer {
                             if let Some(display) = window_options.display.as_deref().filter(|_| saved.is_some()).and_then(|uuid| crate::window_chrome::display_for(uuid, cx)) {
                                 gpui_options.display_id = Some(display);
                             }
+                            let ui_zoom = window_options.ui_zoom;
                             let window = match cx.open_window(
                                 gpui_options,
-                                |_window, cx| {
+                                |window, cx| {
+                                    if let Some(zoom) = ui_zoom {
+                                        window.set_ui_zoom(zoom as f32, cx);
+                                    }
                                     cx.new(|_| GpuixView::new(tree, callback, title, selection))
                                 },
                             ) {
@@ -2496,6 +2508,58 @@ impl GpuixRenderer {
     #[napi]
     pub fn set_window_chrome_callback(&self, callback: Option<ThreadsafeFunction<serde_json::Value>>) -> Result<()> {
         return update_window(move |_view, window, cx| crate::window_chrome::observe(callback, window, cx));
+    }
+
+    /// Kybern (#292): zoom the whole interface (1 = actual size; clamped to 0.25–4) and, when
+    /// given, set the window's minimum content size in OS points first (a smaller window grows
+    /// to it). Answers `getUiZoom`'s report for the zoom applied.
+    #[napi]
+    pub fn set_ui_zoom(&self, zoom: f64, min_width: Option<f64>, min_height: Option<f64>) -> Result<serde_json::Value> {
+        let min = min_width.zip(min_height);
+        return update_window_without_view(move |window, cx| crate::ui_zoom::apply(window, cx, zoom, min));
+    }
+
+    /// Kybern (#292): `{ zoom, scale, displayWidth, displayHeight }`: the interface zoom, the
+    /// display's own scale factor and the visible size of the window's display in OS points.
+    #[napi]
+    pub fn get_ui_zoom(&self) -> Result<serde_json::Value> {
+        return update_window_without_view(|window, cx| crate::ui_zoom::report(window, cx));
+    }
+
+    /// Kybern (#292): move the macOS traffic lights (OS points from the window's top-left; the
+    /// `trafficLightX`/`trafficLightY` window options), so they stay centred in a zoomed title
+    /// bar. A no-op elsewhere.
+    #[napi]
+    pub fn set_traffic_light_position(&self, x: f64, y: f64) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        return update_window_without_view(move |window, _cx| window.set_traffic_light_position(gpui::point(gpui::px(x as f32), gpui::px(y as f32))));
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (x, y);
+            Ok(())
+        }
+    }
+
+    /// Kybern (#292): which of the macOS View menu's Zoom in, Zoom out and Actual size can be
+    /// chosen now (a no-op elsewhere).
+    #[napi]
+    pub fn set_zoom_menu_state(&self, zoom_in: bool, zoom_out: bool, actual_size: bool) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        return update_window_without_view(move |window, _cx| crate::app_menu::set_zoom_items(zoom_in, zoom_out, actual_size, window));
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (zoom_in, zoom_out, actual_size);
+            Ok(())
+        }
+    }
+
+    /// Kybern (#292): called with `zoomIn`, `zoomOut` or `actualSize` when one of the View
+    /// menu's zoom items is chosen with the pointer (macOS). Their shortcuts reach the window
+    /// key listener as ordinary keys. `null` stops.
+    #[napi]
+    pub fn set_menu_command_callback(&self, callback: Option<ThreadsafeFunction<String>>) -> Result<()> {
+        crate::ui_zoom::set_menu_callback(callback);
+        Ok(())
     }
 
     /// Kybern (WP3): the frame to save, `{ state, x, y, width, height, display }`.
@@ -8846,6 +8910,9 @@ pub struct WindowOptions {
     pub height: Option<f64>,
     pub min_width: Option<f64>,
     pub min_height: Option<f64>,
+    /// Kybern (#292): the interface zoom the window opens at (`setUiZoom`), so the first frame
+    /// is already drawn at it. `min_width`/`min_height` stay in OS points.
+    pub ui_zoom: Option<f64>,
     pub resizable: Option<bool>,
     pub fullscreen: Option<bool>,
     /// Plain alpha transparency. Prefer `window_background` when you need blur.
@@ -8899,6 +8966,7 @@ impl Default for WindowOptions {
             height: Some(600.0),
             min_width: None,
             min_height: None,
+            ui_zoom: None,
             resizable: Some(true),
             fullscreen: Some(false),
             transparent: Some(false),

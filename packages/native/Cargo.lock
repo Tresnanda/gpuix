@@ -2642,6 +2642,7 @@ dependencies = [
  "napi-build",
  "napi-derive",
  "notify-rust",
+ "objc",
  "parking_lot",
  "percent-encoding",
  "pulldown-cmark",

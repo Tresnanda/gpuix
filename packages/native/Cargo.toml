@@ -94,6 +94,8 @@ mimalloc = { version = "=0.1.52", default-features = false }
 libmimalloc-sys = { version = "=0.1.49", default-features = false, features = ["extended"] }
 core-text = "=21.0.0"
 core-graphics = "=0.24.0"
+# Kybern: `ui_zoom.rs` reads NSApp.currentEvent (already in the lock through gpui_macos).
+objc = "=0.2.7"
 tar = "0.4"
 flate2 = "1"
 # Production uses the embedded AppKit loop; tests use the native Metal renderer.

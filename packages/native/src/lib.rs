@@ -40,6 +40,7 @@ mod markdown_view;
 mod layout_observer;
 mod window_drag;
 mod window_chrome;
+mod ui_zoom;
 mod window_platform;
 mod key_intercept;
 mod close_guard;
