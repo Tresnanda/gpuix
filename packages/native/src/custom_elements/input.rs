@@ -1451,7 +1451,7 @@ impl TextEditorState {
     fn on_scroll_wheel(
         &mut self,
         event: &ScrollWheelEvent,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.code_scroll_wheel(event, cx) {
@@ -1467,6 +1467,12 @@ impl TextEditorState {
         }
         let delta = f32::from(event.delta.pixel_delta(self.line_height).y);
         let next = (self.scroll_top - delta).clamp(0.0, max_scroll);
+        // Wheel latching (GPUI `scroll_latch.rs`): a gesture that starts while the field can move scrolls only the field,
+        // to its end and past it; one that starts at its end goes on to the scroller behind (the transcript).
+        let latch_key = self as *const Self as usize;
+        if !window.latch_scroll(latch_key, gpui::point(px(0.), px(delta)), next != self.scroll_top) {
+            return;
+        }
         if next == self.scroll_top {
             if delta != 0.0 {
                 cx.stop_propagation();
