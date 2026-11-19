@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use gpui::{
     div, font, px, AnyElement, BorderStyle, FontStyle, FontWeight, Hsla, SharedString, TextRun,
-    UnderlineStyle, Window,
+    Window,
 };
 
 use super::parser::{Block, BlockTree, InlineRun, TableAlign};
@@ -161,11 +161,8 @@ pub fn flatten_runs(runs: &[InlineRun], theme: &Theme, base_weight: FontWeight) 
                 theme.text
             },
             background_color: None,
-            underline: (run.style.link.is_some() && !matches!(theme.markdown.link.underline.as_deref(), Some("none" | "hover"))).then_some(UnderlineStyle {
-                color: Some(color(&theme.markdown.link.color, theme.text_muted)),
-                thickness: px(1.0),
-                wavy: false,
-            }),
+            // The text draws link underlines itself (`link_underline`), one straight line per link and line.
+            underline: None,
             strikethrough: run.style.strikethrough.then_some(gpui::StrikethroughStyle {
                 thickness: px(1.0),
                 color: Some(theme.text_muted),
@@ -180,6 +177,21 @@ pub fn flatten_runs(runs: &[InlineRun], theme: &Theme, base_weight: FontWeight) 
         code_ranges,
         icons,
         fades: Vec::new(),
+    }
+}
+
+/// The bytes of a link that are underlined: all of it but a leading icon's two-character slot.
+pub fn underline_range(link: &Range<usize>, icons: &[(usize, Arc<gpui::RenderImage>)]) -> Range<usize> {
+    if icons.iter().any(|(at, _)| *at == link.start) { (link.start + 2).min(link.end)..link.end } else { link.clone() }
+}
+
+/// The link underline a theme asks for: its colour and whether every link shows it (`always`, the default) or only
+/// the hovered one. `None` under `underline: "none"`.
+pub fn link_line(theme: &Theme) -> Option<(Hsla, bool)> {
+    match theme.markdown.link.underline.as_deref() {
+        Some("none") => None,
+        Some("hover") => Some((color(&theme.markdown.link.color, theme.text), false)),
+        _ => Some((color(&theme.markdown.link.color, theme.text_muted), true)),
     }
 }
 
@@ -466,7 +478,11 @@ fn flat_text_element(flat: &FlatText, size: f32, ctx: &mut MdContext) -> AnyElem
         run_provider: run_provider.clone(),
         retained_layout,
         extra_wash: extra,
-        hover_link_color: (ctx.theme.markdown.link.underline.as_deref() == Some("hover")).then(||color(&ctx.theme.markdown.link.color, ctx.theme.text)),
+        link_underline: link_line(&ctx.theme).filter(|_| !flat.links.is_empty()).map(|(color, always)| crate::text::LinkUnderline {
+            color,
+            always,
+            ranges: Arc::new(flat.links.iter().map(|(link, _)| underline_range(link, &flat.icons)).collect()),
+        }),
         links: if shared_links.is_some(){Vec::new()}else{flat.links.clone()},
         shared_links,
         on_link: ctx.on_link.clone(),
@@ -776,9 +792,10 @@ mod tests {
             flat.text.len()
         );
         assert_eq!(flat.links, vec![(3..7, "https://x.dev".to_string())]);
-        // Links stay monochrome with an underline, never accent-tinted.
+        // Links stay monochrome, never accent-tinted; the text draws their underline (`link_underline`).
         assert_eq!(flat.runs[1].color, theme.text);
-        assert!(flat.runs[1].underline.is_some());
+        assert!(flat.runs[1].underline.is_none());
+        assert_eq!(link_line(&theme).map(|(_, always)| always), Some(true));
         assert_eq!(flat.runs[2].font.weight, FontWeight::SEMIBOLD);
     }
 

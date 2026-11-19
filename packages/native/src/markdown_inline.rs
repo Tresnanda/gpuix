@@ -76,6 +76,9 @@ impl InlineData {
                 TableAlign::Right => (width - used).max(0.0),
             };
             for position in positions {
+                // Every piece of the line gets the same value, computed the same way, so its link underline lands on
+                // the same device row whatever the piece's own font and offset.
+                position.line_baseline = position.y + baseline;
                 position.x += offset;
                 position.y += baseline - position.baseline;
             }
@@ -107,7 +110,7 @@ impl InlineData {
             } else {
                 self.line
             };
-            positions.push(InlinePosition { index, x, y, width: token_width, height, baseline });
+            positions.push(InlinePosition { index, x, y, width: token_width, height, baseline, line_baseline: 0.0 });
             x += token_width;
 
             if forced {
@@ -117,11 +120,15 @@ impl InlineData {
             }
         }
         y += align_line(&mut positions[line_start..], x);
-        InlineLayout { width, height: y, positions }
+        // A link's underline sits where a prose line puts it (2 px above the line box's bottom), measured from the
+        // baseline every fragment of the line shares: code and bold pieces underline at the same height.
+        InlineLayout { width, height: y, positions, underline_drop: self.line - base_baseline - 2.0 }
     }
 }
 struct InlinePosition {
     baseline: f32,
+    /// The baseline every piece of this visual line shares, from the flow's top.
+    line_baseline: f32,
     index: usize,
     x: f32,
     y: f32,
@@ -132,12 +139,23 @@ struct InlineLayout {
     width: f32,
     height: f32,
     positions: Vec<InlinePosition>,
+    /// Underline offset below a line's baseline.
+    underline_drop: f32,
+}
+impl InlineLayout {
+    /// Whether two pieces share a visual line (same aligned baseline).
+    fn same_line(&self, a: &InlinePosition, b: Option<usize>, line: f32) -> bool {
+        b.and_then(|index| self.positions.get(index)).is_some_and(|b| {
+            a.height <= line + 0.01 && b.height <= line + 0.01 && ((a.y + a.baseline) - (b.y + b.baseline)).abs() < 0.5
+        })
+    }
 }
 struct InlineInteraction {
     selection: SharedSelection,
     selectable: bool,
     selection_wash: Hsla,
-    hover_link_color: Option<Hsla>,
+    /// The link underline's colour, and whether every link shows it or only the hovered one.
+    link_line: Option<(Hsla, bool)>,
     on_link: Option<Arc<dyn Fn(&str, Option<(f64, f64)>)>>,
     highlight: Option<Arc<crate::text::HighlightContext>>,
     caret: Option<Hsla>,
@@ -181,6 +199,32 @@ fn flow_link_at(data: &InlineData, layout: &InlineLayout, bounds: Bounds<Pixels>
         }
     }
 }
+/// The part of one link's underline a piece draws: under its slice of the link (`underline`, the link without a
+/// leading icon's slot), at the line's shared height, reaching across code padding into the neighbouring piece where
+/// the link goes on along the same line, and stopping before trailing spaces where it goes on to the next line.
+fn fragment_underline(data: &InlineData, layout: &InlineLayout, position: &InlinePosition, top: Pixels, underline: &Range<usize>, color: Hsla, pad: f32) -> Option<crate::text::FragmentUnderline> {
+    let range = &data.tokens[position.index].range;
+    let a = range.start.max(underline.start);
+    let mut b = range.end.min(underline.end);
+    let before = underline.start < range.start && layout.same_line(position, position.index.checked_sub(1), data.line);
+    let after = underline.end > range.end && layout.same_line(position, Some(position.index + 1), data.line);
+    if underline.end > range.end && !after {
+        while b > a && data.flat.text.as_bytes()[b - 1].is_ascii_whitespace() {
+            b -= 1;
+        }
+    }
+    (a < b).then(|| crate::text::FragmentUnderline {
+        range: a - range.start..b - range.start,
+        color,
+        below: position.baseline + layout.underline_drop,
+        // A one-line piece draws at its line's shared height; a word wrapped inside its own piece, row by row.
+        line_y: (position.height <= data.line + 0.01).then(|| top + px(position.line_baseline + layout.underline_drop)),
+        lead: if before { pad } else { 0.0 },
+        // Into the next piece's first pixel: no hairline seam between pieces.
+        trail: if after { pad + 1.0 } else { 0.0 },
+    })
+}
+
 impl IntoElement for InlineFlow {
     type Element = Self;
     fn into_element(self) -> Self {
@@ -239,8 +283,8 @@ impl Element for InlineFlow {
             *layout = Some(data.layout(width, window));
         }
         let layout = layout.as_ref().unwrap();
-        self.hovered = interaction.hover_link_color.and_then(|_| flow_link_at(data, layout, bounds, window.mouse_position(), window));
-        let hovered = self.hovered.map(|index| &data.flat.links[index].0);
+        let hover = interaction.link_line.is_some_and(|(_, always)| !always);
+        self.hovered = if hover { flow_link_at(data, layout, bounds, window.mouse_position(), window) } else { None };
         let clip = window.content_mask().bounds;
         let washes = Rc::new(RefCell::new(None));
         let search_key = crate::text::selection_key(data.element_id, data.base);
@@ -294,16 +338,21 @@ impl Element for InlineFlow {
                     (a < b).then(|| (a - range.start..b - range.start, url.clone()))
                 })
                 .collect();
+            let underlines = interaction.link_line.map(|(color, always)| {
+                let first = data.flat.links.partition_point(|(link, _)| link.end <= range.start);
+                data.flat.links[first..]
+                    .iter()
+                    .enumerate()
+                    .take_while(|(_, (link, _))| link.start < range.end)
+                    .filter(|(index, _)| always || self.hovered == Some(first + index))
+                    .filter_map(|(_, (link, _))| fragment_underline(data, layout, position, bounds.top(), &underline_range(link, &data.flat.icons), color, pad))
+                    .collect()
+            });
             let text = crate::text::selectable_text(crate::text::SelectableText {
                 selectable: interaction.selectable,
                 group: Some(data.group),
                 links,
-                hover_link_color: None,
-                hover_range: hovered.zip(interaction.hover_link_color).and_then(|(link, color)| {
-                    let a = range.start.max(link.start);
-                    let b = range.end.min(link.end);
-                    (a < b).then(|| (a - range.start..b - range.start, color, link.end > range.end))
-                }),
+                underlines: underlines.unwrap_or_default(),
                 on_link: interaction.on_link.clone(),
                 extra_wash,
                 highlight: interaction.highlight.clone().map(|context| crate::text::HighlightSource::NativeFragment {
@@ -357,7 +406,7 @@ impl Element for InlineFlow {
         for child in children {
             child.paint(window, cx)
         }
-        if self.interaction.hover_link_color.is_some() && !self.data.flat.links.is_empty() {
+        if self.interaction.link_line.is_some_and(|(_, always)| !always) && !self.data.flat.links.is_empty() {
             let (data, layout) = (self.data.clone(), state.clone());
             let hovered = self.hovered;
             window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, window, _cx| {
@@ -390,7 +439,7 @@ fn inline_element(flat: &FlatText, size: f32, line: f32, align: Option<TableAlig
             selection: ctx.selection.clone(),
             selectable: ctx.selectable,
             selection_wash: ctx.selection_wash,
-            hover_link_color: (ctx.theme.markdown.link.underline.as_deref() == Some("hover")).then(||color(&ctx.theme.markdown.link.color, ctx.theme.text)),
+            link_line: link_line(&ctx.theme),
             on_link: ctx.on_link.clone(),
             highlight: ctx.highlight_set.clone(),
             caret: ctx.caret.take(),
