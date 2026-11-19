@@ -861,4 +861,16 @@ mod tests {
         assert!(h1 > h2 && h2 > h6);
         assert_eq!(h6, m.md_text_size);
     }
+
+    #[test]
+    fn link_icon_slot_is_its_own_flow_piece() {
+        // "Hero (" + slot + `NamesForm.tsx` + ")": the parenthesis must not take the slot's first space.
+        let text = "Hero (  NamesForm.tsx) on";
+        let pieces: Vec<(&str, bool, bool)> = flow_tokens(text, &[8..21], &[6]).iter().map(|t| (&text[t.range.clone()], t.code, t.slot)).collect();
+        assert_eq!(pieces, vec![("Hero ", false, false), ("(", false, false), ("  ", false, true), ("NamesForm.tsx", true, false), (") ", false, false), ("on", false, false)]);
+        // After a space and at the start, too.
+        let text = "  a.rs b";
+        let pieces: Vec<&str> = flow_tokens(text, &[2..6], &[0]).iter().map(|t| &text[t.range.clone()]).collect();
+        assert_eq!(pieces, vec!["  ", "a.rs", " ", "b"]);
+    }
 }

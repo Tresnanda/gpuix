@@ -10,6 +10,8 @@ use std::rc::Rc;
 struct InlineToken {
     range: Range<usize>,
     code: bool,
+    /// A link icon's slot: it breaks to the next line together with the link's first piece.
+    slot: bool,
 }
 struct InlineData {
     flat: FlatText,
@@ -48,6 +50,15 @@ impl InlineData {
             }
         }
         out
+    }
+    /// A one-line piece's width in the flow: its text plus code padding, at most the flow's width.
+    fn piece_width(&self, token: &InlineToken, width: f32, window: &Window) -> f32 {
+        let range = token.range.start..token.range.end - usize::from(self.flat.text[token.range.clone()].ends_with('\n'));
+        let size = if token.code { self.size * self.ratio } else { self.size };
+        let pad = if token.code { self.padding } else { 0.0 };
+        let text: SharedString = self.flat.text[range.clone()].to_string().into();
+        let natural = f32::from(window.text_system().shape_line(text, px(size), &self.runs(&range), None).width());
+        (natural + 2.0 * pad).min(width).max(0.0)
     }
     fn layout(&self, width: f32, window: &Window) -> InlineLayout {
         let mut positions: Vec<InlinePosition> = Vec::with_capacity(self.tokens.len());
@@ -95,7 +106,11 @@ impl InlineData {
             let natural = f32::from(shaped.width());
             let baseline = (self.line + f32::from(shaped.ascent) - f32::from(shaped.descent)) / 2.0;
             let token_width = (natural + 2.0 * pad).min(width).max(0.0);
-            if x > 0.0 && x + token_width > width + 0.01 {
+            // A link icon's slot needs room for the link's first piece too, so the icon never ends a line on its own
+            // (unless that piece is wider than a whole line, which breaks anyway).
+            let keep = if token.slot { self.tokens.get(index + 1).map_or(0.0, |next| self.piece_width(next, width, window)) } else { 0.0 };
+            let keep = if token_width + keep <= width + 0.01 { keep } else { 0.0 };
+            if x > 0.0 && x + token_width + keep > width + 0.01 {
                 y += align_line(&mut positions[line_start..], x);
                 line_start = positions.len();
                 x = 0.0;
@@ -421,6 +436,30 @@ impl Element for InlineFlow {
         }
     }
 }
+/// The flow's pieces: a word with its trailing whitespace, a whole inline-code span, or a link icon's two-space slot.
+/// The slot is a piece of its own, so the piece that paints the icon always starts at the icon's byte: a word right
+/// before it (an opening parenthesis, as in `([`file.rs`](path))`) used to take the slot's first space into its own
+/// piece, and the icon, painted only by a piece starting at its byte, was never drawn.
+fn flow_tokens(text: &str, code_ranges: &[Range<usize>], icons: &[usize]) -> Vec<InlineToken> {
+    let mut tokens = Vec::new();
+    let mut start = 0;
+    while start < text.len() {
+        let code = code_ranges.iter().find(|r| r.contains(&start));
+        let end = if let Some(code) = code {
+            code.end
+        } else if icons.contains(&start) {
+            (start + 2).min(text.len())
+        } else {
+            let next_code = code_ranges.iter().find(|r| r.start > start).map_or(text.len(), |r| r.start);
+            let limit = icons.iter().copied().filter(|at| *at > start).fold(next_code, usize::min);
+            text[start..limit].char_indices().find(|(_, c)| c.is_whitespace()).map_or(limit, |(i, c)| start + i + c.len_utf8())
+        };
+        tokens.push(InlineToken { range: start..end, code: code.is_some(), slot: code.is_none() && icons.contains(&start) });
+        start = end;
+    }
+    tokens
+}
+
 fn inline_element(flat: &FlatText, size: f32, line: f32, align: Option<TableAlign>, ctx: &mut MdContext) -> AnyElement {
     let style = &ctx.theme.markdown;
     let padding = number(style.inline_code_padding_x, 0.0);
@@ -445,19 +484,7 @@ fn inline_element(flat: &FlatText, size: f32, line: f32, align: Option<TableAlig
             caret: ctx.caret.take(),
     }; 
     let create=|| {
-    let mut tokens = Vec::new();
-    let mut start = 0;
-    while start < flat.text.len() {
-        let code = flat.code_ranges.iter().find(|r| r.contains(&start));
-        let end = if let Some(code) = code {
-            code.end
-        } else {
-            let limit = flat.code_ranges.iter().find(|r| r.start > start).map_or(flat.text.len(), |r| r.start);
-            flat.text[start..limit].char_indices().find(|(_, c)| c.is_whitespace()).map_or(limit, |(i, c)| start + i + c.len_utf8())
-        };
-        tokens.push(InlineToken { range: start..end, code: code.is_some() });
-        start = end;
-    }
+    let tokens = flow_tokens(&flat.text, &flat.code_ranges, &flat.icons.iter().map(|(at, _)| *at).collect::<Vec<_>>());
 
         for token in &tokens { if let Some(cache)=&ctx.viewport {crate::markdown_view::record(cache,ctx.element_id,base+1+token.range.start,flat.text.clone(),token.range.clone(),Some(ctx.element_id.rotate_left(32)^base as u64));} }
         InlineData {
