@@ -219,12 +219,11 @@ pub struct SelectableText {
     pub retained_layout: Option<TextLayout>,
     pub run_provider: Option<std::rc::Rc<dyn Fn()->Vec<TextRun>>>,
     pub extra_wash: Option<Box<dyn Fn(&TextLayout, &mut Window)>>,
+    /// Single-run text: how its links are underlined (always, or the one under the pointer).
+    pub link_underline: Option<LinkUnderline>,
+    /// One fragment of a wider inline flow (`markdown_inline.rs`): the link underlines it draws, placed by the flow.
+    pub underlines: Vec<FragmentUnderline>,
     /// Clickable byte ranges and their payloads, typically link URLs.
-    pub hover_link_color: Option<Hsla>,
-    /// Bytes of a link hovered anywhere in the same flow, the underline color,
-    /// and whether the link continues past this fragment (its underline then
-    /// reaches the next fragment, leaving no hairline gap).
-    pub hover_range: Option<(Range<usize>, Hsla, bool)>,
     pub shared_links: Option<Arc<Vec<(Range<usize>, String)>>>,
     pub links: Vec<(Range<usize>, String)>,
     /// Called with the payload of the range under a click.
@@ -257,8 +256,8 @@ impl SelectableText {
             retained_layout: None,
             run_provider: None,
             extra_wash: None,
-            hover_link_color: None,
-            hover_range: None,
+            link_underline: None,
+            underlines: Vec::new(),
             shared_links: None,
             links: Vec::new(),
             on_link: None,
@@ -267,6 +266,42 @@ impl SelectableText {
             highlight: None,
         }
     }
+}
+
+/// How single-run text underlines its links.
+#[derive(Clone)]
+pub struct LinkUnderline {
+    pub color: Hsla,
+    /// Every link, or only the one under the pointer.
+    pub always: bool,
+    /// One entry per link: the bytes to underline. A link that leads with an icon is clickable on the icon, but only
+    /// its text is underlined.
+    pub ranges: Arc<Vec<Range<usize>>>,
+}
+
+/// A link underline drawn by one fragment of an inline flow: a 1 px line under each visual line of `range`, `below`
+/// px under that line's top (the flow's prose baseline plus a fixed drop, the same for every fragment whatever its
+/// font), reaching `lead` px left of the first line and `trail` px right of the last where the link continues into
+/// the neighbouring fragment on the same line.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FragmentUnderline {
+    pub range: Range<usize>,
+    pub color: Hsla,
+    pub below: f32,
+    pub lead: f32,
+    pub trail: f32,
+}
+
+/// One straight 1 px link line, snapped to device pixels so every piece of a link lands on the same row.
+fn paint_link_line(window: &mut Window, left: gpui::Pixels, right: gpui::Pixels, y: gpui::Pixels, color: Hsla) {
+    let scale = window.scale_factor();
+    let snap = |value: gpui::Pixels| gpui::px((f32::from(value) * scale).round() / scale);
+    let (left, right, y) = (snap(left), snap(right), snap(y));
+    if right <= left {
+        return;
+    }
+    let rect = Bounds { origin: point(left, y), size: gpui::size(right - left, gpui::px(1.0)) };
+    window.paint_quad(quad(rect, gpui::px(0.0), color, gpui::px(0.0), gpui::transparent_black(), Default::default()));
 }
 
 /// A selectable text element: `StyledText` with a canvas underlay that paints
@@ -284,8 +319,8 @@ pub fn selectable_text(opts: SelectableText) -> gpui::AnyElement {
         run_provider,
         links,
         shared_links,
-        hover_link_color,
-        hover_range,
+        link_underline,
+        underlines,
         on_link,
         selectable,
         group,
@@ -354,32 +389,32 @@ pub fn selectable_text(opts: SelectableText) -> gpui::AnyElement {
                 });
             }
             PAINTED.with(|p| p.borrow_mut().push(text.clone()));
-            if let Some((range, color, continues)) = &hover_range {
-                let rects = range_rects(&layout, range, 0.0, 0.0);
+            for underline in &underlines {
+                let rects = range_rects(&layout, &underline.range, 0.0, 0.0);
                 let last = rects.len().saturating_sub(1);
-                for (index, mut rect) in rects.into_iter().enumerate() {
-                    rect.origin.y += rect.size.height - gpui::px(2.0);
-                    rect.size.height = gpui::px(1.0);
-                    if *continues && index == last { rect.size.width += gpui::px(1.0); }
-                    window.paint_quad(quad(rect, gpui::px(0.0), *color, gpui::px(0.0), gpui::transparent_black(), Default::default()));
+                for (index, rect) in rects.into_iter().enumerate() {
+                    let left = rect.left() - if index == 0 { gpui::px(underline.lead) } else { gpui::px(0.0) };
+                    let right = rect.right() + if index == last { gpui::px(underline.trail) } else { gpui::px(0.0) };
+                    paint_link_line(window, left, right, rect.top() + gpui::px(underline.below), underline.color);
                 }
             }
-            if let Some(color) = hover_link_color {
+            if let Some(line) = &link_underline {
                 let hit = |position| layout.index_for_position(position).ok().and_then(|ix| links.iter().position(|(r,_)|r.contains(&ix)));
-                let hovered = hit(window.mouse_position());
-                if let Some(index) = hovered {
-                    for mut rect in range_rects(&layout, &links[index].0, 0.0, 0.0) {
-                        rect.origin.y += rect.size.height - gpui::px(2.0);
-                        rect.size.height = gpui::px(1.0);
-                        window.paint_quad(quad(rect, gpui::px(0.0), color, gpui::px(0.0), gpui::transparent_black(), Default::default()));
+                let hovered = if line.always { None } else { hit(window.mouse_position()) };
+                let ranges: Vec<&Range<usize>> = if line.always { line.ranges.iter().collect() } else { hovered.and_then(|index| line.ranges.get(index)).into_iter().collect() };
+                for range in ranges {
+                    for rect in range_rects(&layout, range, 0.0, 0.0) {
+                        paint_link_line(window, rect.left(), rect.right(), rect.bottom() - gpui::px(2.0), line.color);
                     }
                 }
-                let layout=layout.clone(); let links=links.clone();
-                window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, window, _cx| {
-                    if phase != gpui::DispatchPhase::Bubble { return; }
-                    let next=layout.index_for_position(event.position).ok().and_then(|ix|links.iter().position(|(r,_)|r.contains(&ix)));
-                    if next != hovered { window.refresh(); }
-                });
+                if !line.always {
+                    let layout=layout.clone(); let links=links.clone();
+                    window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, window, _cx| {
+                        if phase != gpui::DispatchPhase::Bubble { return; }
+                        let next=layout.index_for_position(event.position).ok().and_then(|ix|links.iter().position(|(r,_)|r.contains(&ix)));
+                        if next != hovered { window.refresh(); }
+                    });
+                }
             }
             if let Some(on_link) = &on_link {
                 register_link_listener(window, &layout, &links, on_link, &selection);
