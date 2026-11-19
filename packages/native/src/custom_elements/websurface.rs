@@ -174,6 +174,9 @@ mod linux {
         unlock: unsafe extern "C" fn(*const c_char, i32),
         input: unsafe extern "C" fn(*const c_char, *const Input),
         listen: unsafe extern "C" fn(Notify, *mut c_void),
+        /// Whether the page takes a wheel event (`kybern_web_surface_wheel`): a visual hands the wheel to the chat except
+        /// over its own scroll areas. Absent in older companions, which take every wheel event.
+        wheel: Option<unsafe extern "C" fn(*const c_char, f64, f64, f64, f64, i32) -> i32>,
     }
 
     unsafe extern "C" {
@@ -207,6 +210,7 @@ mod linux {
                     unlock: std::mem::transmute(symbol(c"kybern_web_surface_unlock")?),
                     input: std::mem::transmute(symbol(c"kybern_web_surface_input")?),
                     listen: std::mem::transmute(symbol(c"kybern_web_surface_listen")?),
+                    wheel: symbol(c"kybern_web_surface_wheel").map(|address| std::mem::transmute(address)),
                 };
                 (api.listen)(on_notify, std::ptr::null_mut());
                 Some(api)
@@ -443,6 +447,15 @@ mod linux {
             self.texture = None;
         }
 
+        /// Whether the page takes this wheel event; otherwise it bubbles on to GPUI (the chat scrolls).
+        fn takes_wheel(&self, x: f64, y: f64, dx: f64, dy: f64, phase: i32) -> bool {
+            match api(&self.lib).and_then(|api| api.wheel) {
+                // SAFETY: a valid C string; the companion reads it for the call only.
+                Some(wheel) => unsafe { wheel(self.doc_c.as_ptr(), x, y, dx, dy, phase) != 0 },
+                None => true,
+            }
+        }
+
         fn send(&self, input: Input) {
             if let Some(api) = api(&self.lib) {
                 // SAFETY: valid C string and a live Input; the companion copies both.
@@ -575,7 +588,11 @@ mod linux {
         if modifiers.alt {
             return keystroke.key == "p";
         }
-        matches!(keystroke.key.as_str(), "l" | "r" | "n" | "b" | "k" | "j" | "[" | "]" | "up" | "," | "\\")
+        // Ctrl+W, Ctrl+1–9 (tabs) and the interface zoom too: never a field's own keys.
+        matches!(
+            keystroke.key.as_str(),
+            "l" | "r" | "n" | "b" | "k" | "j" | "[" | "]" | "up" | "," | "\\" | "w" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "=" | "-" | "0"
+        )
     }
 
     /// X keysym for a GPUI keystroke (WPE's keymap turns it into the DOM key and text).
@@ -729,6 +746,20 @@ mod linux {
                     ScrollDelta::Lines(delta) => (delta.x * 40., delta.y * 40., 0),
                 };
                 let _ = window;
+                // A visual's page never scrolls itself: unless it takes the gesture (one of its own scroll areas), the
+                // event bubbles on and the chat scrolls. Wheels without phases are 0; a touchpad gesture 1 to 3.
+                let phase = if precise == 0 {
+                    0
+                } else {
+                    match event.touch_phase {
+                        gpui::TouchPhase::Started => 1,
+                        gpui::TouchPhase::Moved => 2,
+                        gpui::TouchPhase::Ended | gpui::TouchPhase::Cancelled => 3,
+                    }
+                };
+                if !surface.takes_wheel(x, y, f64::from(dx), f64::from(dy), phase) {
+                    return;
+                }
                 surface.send(Input { kind: INPUT_SCROLL, x, y, dx: f64::from(dx), dy: f64::from(dy), precise, modifiers: modifier_bits(&event.modifiers), ..Default::default() });
                 cx.stop_propagation();
             })
