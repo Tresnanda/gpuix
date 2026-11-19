@@ -76,6 +76,9 @@ impl InlineData {
                 TableAlign::Right => (width - used).max(0.0),
             };
             for position in positions {
+                // Every piece of the line gets the same value, computed the same way, so its link underline lands on
+                // the same device row whatever the piece's own font and offset.
+                position.line_baseline = position.y + baseline;
                 position.x += offset;
                 position.y += baseline - position.baseline;
             }
@@ -107,7 +110,7 @@ impl InlineData {
             } else {
                 self.line
             };
-            positions.push(InlinePosition { index, x, y, width: token_width, height, baseline });
+            positions.push(InlinePosition { index, x, y, width: token_width, height, baseline, line_baseline: 0.0 });
             x += token_width;
 
             if forced {
@@ -124,6 +127,8 @@ impl InlineData {
 }
 struct InlinePosition {
     baseline: f32,
+    /// The baseline every piece of this visual line shares, from the flow's top.
+    line_baseline: f32,
     index: usize,
     x: f32,
     y: f32,
@@ -197,7 +202,7 @@ fn flow_link_at(data: &InlineData, layout: &InlineLayout, bounds: Bounds<Pixels>
 /// The part of one link's underline a piece draws: under its slice of the link (`underline`, the link without a
 /// leading icon's slot), at the line's shared height, reaching across code padding into the neighbouring piece where
 /// the link goes on along the same line, and stopping before trailing spaces where it goes on to the next line.
-fn fragment_underline(data: &InlineData, layout: &InlineLayout, position: &InlinePosition, underline: &Range<usize>, color: Hsla, pad: f32) -> Option<crate::text::FragmentUnderline> {
+fn fragment_underline(data: &InlineData, layout: &InlineLayout, position: &InlinePosition, top: Pixels, underline: &Range<usize>, color: Hsla, pad: f32) -> Option<crate::text::FragmentUnderline> {
     let range = &data.tokens[position.index].range;
     let a = range.start.max(underline.start);
     let mut b = range.end.min(underline.end);
@@ -212,6 +217,8 @@ fn fragment_underline(data: &InlineData, layout: &InlineLayout, position: &Inlin
         range: a - range.start..b - range.start,
         color,
         below: position.baseline + layout.underline_drop,
+        // A one-line piece draws at its line's shared height; a word wrapped inside its own piece, row by row.
+        line_y: (position.height <= data.line + 0.01).then(|| top + px(position.line_baseline + layout.underline_drop)),
         lead: if before { pad } else { 0.0 },
         // Into the next piece's first pixel: no hairline seam between pieces.
         trail: if after { pad + 1.0 } else { 0.0 },
@@ -338,7 +345,7 @@ impl Element for InlineFlow {
                     .enumerate()
                     .take_while(|(_, (link, _))| link.start < range.end)
                     .filter(|(index, _)| always || self.hovered == Some(first + index))
-                    .filter_map(|(_, (link, _))| fragment_underline(data, layout, position, &underline_range(link, &data.flat.icons), color, pad))
+                    .filter_map(|(_, (link, _))| fragment_underline(data, layout, position, bounds.top(), &underline_range(link, &data.flat.icons), color, pad))
                     .collect()
             });
             let text = crate::text::selectable_text(crate::text::SelectableText {

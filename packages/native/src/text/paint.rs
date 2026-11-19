@@ -288,6 +288,8 @@ pub struct FragmentUnderline {
     pub range: Range<usize>,
     pub color: Hsla,
     pub below: f32,
+    /// The line's own height in the window, shared by every piece on it; `below` places the rows of a piece that wraps.
+    pub line_y: Option<gpui::Pixels>,
     pub lead: f32,
     pub trail: f32,
 }
@@ -395,7 +397,8 @@ pub fn selectable_text(opts: SelectableText) -> gpui::AnyElement {
                 for (index, rect) in rects.into_iter().enumerate() {
                     let left = rect.left() - if index == 0 { gpui::px(underline.lead) } else { gpui::px(0.0) };
                     let right = rect.right() + if index == last { gpui::px(underline.trail) } else { gpui::px(0.0) };
-                    paint_link_line(window, left, right, rect.top() + gpui::px(underline.below), underline.color);
+                    let y = underline.line_y.unwrap_or(rect.top() + gpui::px(underline.below));
+                    paint_link_line(window, left, right, y, underline.color);
                 }
             }
             if let Some(line) = &link_underline {
