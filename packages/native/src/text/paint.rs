@@ -403,7 +403,7 @@ pub fn selectable_text(opts: SelectableText) -> gpui::AnyElement {
                 let hovered = if line.always { None } else { hit(window.mouse_position()) };
                 let ranges: Vec<&Range<usize>> = if line.always { line.ranges.iter().collect() } else { hovered.and_then(|index| line.ranges.get(index)).into_iter().collect() };
                 for range in ranges {
-                    for rect in range_rects(&layout, range, 0.0, 0.0) {
+                    for rect in link_line_rects(&layout, &text, range) {
                         paint_link_line(window, rect.left(), rect.right(), rect.bottom() - gpui::px(2.0), line.color);
                     }
                 }
@@ -792,6 +792,47 @@ fn range_rects_with_positions(
     inset_y: f32,
     position_for_index: impl Fn(usize) -> Option<gpui::Point<gpui::Pixels>>,
 ) -> Vec<Bounds<gpui::Pixels>> {
+    range_rows_with_positions(bounds, line_height, range, pad_x, inset_y, position_for_index).into_iter().map(|(rect, _)| rect).collect()
+}
+
+/// The rows of a link's underline in single-run text: `range_rects`, except that a row the link wraps from stops at
+/// its last glyph instead of running under the trailing space.
+pub fn link_line_rects(layout: &TextLayout, text: &str, range: &Range<usize>) -> Vec<Bounds<gpui::Pixels>> {
+    link_line_rects_with_positions(layout.bounds(), layout.line_height(), text, range, |index| layout.position_for_index(index))
+}
+
+fn link_line_rects_with_positions(
+    bounds: Bounds<gpui::Pixels>,
+    line_height: gpui::Pixels,
+    text: &str,
+    range: &Range<usize>,
+    position_for_index: impl Fn(usize) -> Option<gpui::Point<gpui::Pixels>>,
+) -> Vec<Bounds<gpui::Pixels>> {
+    let mut rows = range_rows_with_positions(bounds, line_height, range, 0.0, 0.0, &position_for_index);
+    let last = rows.len().saturating_sub(1);
+    for (rect, row) in rows.iter_mut().take(last) {
+        let mut end = row.end;
+        while end > row.start && text.as_bytes().get(end - 1).is_some_and(u8::is_ascii_whitespace) {
+            end -= 1;
+        }
+        if end < row.end {
+            if let Some(at) = position_for_index(end).filter(|at| at.y == rect.origin.y && at.x > rect.origin.x) {
+                rect.size.width = at.x - rect.origin.x;
+            }
+        }
+    }
+    rows.into_iter().map(|(rect, _)| rect).collect()
+}
+
+/// `range_rects` with the bytes each row covers.
+fn range_rows_with_positions(
+    bounds: Bounds<gpui::Pixels>,
+    line_height: gpui::Pixels,
+    range: &Range<usize>,
+    pad_x: f32,
+    inset_y: f32,
+    position_for_index: impl Fn(usize) -> Option<gpui::Point<gpui::Pixels>>,
+) -> Vec<(Bounds<gpui::Pixels>, Range<usize>)> {
     let mut rects = Vec::new();
     let mut cur = range.start;
     // Walk the range one visual row at a time: binary search for the furthest
@@ -825,12 +866,12 @@ fn range_rects_with_positions(
         };
         if let Some(p2) = position_for_index(seg_end) {
             if p2.x > p1.x {
-                rects.push(Bounds::new(
-                    point(p1.x - px(pad_x), p1.y + px(inset_y)),
-                    size(
-                        p2.x - p1.x + px(2.0 * pad_x),
-                        line_height - px(2.0 * inset_y),
+                rects.push((
+                    Bounds::new(
+                        point(p1.x - px(pad_x), p1.y + px(inset_y)),
+                        size(p2.x - p1.x + px(2.0 * pad_x), line_height - px(2.0 * inset_y)),
                     ),
+                    cur..seg_end,
                 ));
             }
         }
@@ -876,6 +917,18 @@ mod tests {
         assert_eq!(rects.len(), 1);
         assert_eq!(rects[0].origin, point(px(0.0), px(22.0)));
         assert_eq!(rects[0].size, size(px(40.0), px(22.0)));
+    }
+
+    #[test]
+    fn link_line_stops_before_the_space_it_wraps_at() {
+        // "abcd efgh": the soft wrap after the space at byte 4 (byte 5 starts row 1).
+        let rects = link_line_rects_with_positions(Bounds::new(point(px(0.0), px(0.0)), size(px(50.0), px(44.0))), px(22.0), "abcd efgh", &(1..9), wrapped_position);
+        assert_eq!(rects.len(), 2);
+        assert_eq!((rects[0].origin.x, rects[0].size.width), (px(10.0), px(30.0)), "row 0 ends after 'd', not after the space");
+        assert_eq!((rects[1].origin.x, rects[1].size.width), (px(0.0), px(40.0)));
+        // Without a wrap the range keeps its own spaces.
+        let rects = link_line_rects_with_positions(Bounds::new(point(px(0.0), px(0.0)), size(px(50.0), px(44.0))), px(22.0), "abcd efgh", &(1..4), wrapped_position);
+        assert_eq!(rects[0].size.width, px(30.0));
     }
 
     #[test]
